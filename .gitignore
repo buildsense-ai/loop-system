@@ -1,0 +1,10 @@
+.DS_Store
+**/node_modules/
+**/dist/
+**/.pi-subagents/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+coverage/
+.tmp/
