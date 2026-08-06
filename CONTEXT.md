@@ -38,11 +38,11 @@ Collaboration Group 是人类与 Steward/Review Agent 的共享可见性容器�
 
 ### Runtime Session
 
-某个 Agent runtime 的短命执行实例。它可以连接、断线、重连或被替换。Runtime Session 的在线状态不表示 Work Item 是否完成。
+某个 Agent runtime 的短命执行实例。它可以连接、断线、重连或被替换。一个 Agent identity 可以同时拥有多个 Runtime Session；Runtime Session 的在线状态不表示 Work Item 是否完成。
 
 ### Attempt
 
-某个 Worker Runtime Session 对 Work Item 的一次执行尝试。Attempt 具有独立 ID、generation、租约和运行时绑定。
+某个 Worker Runtime Session 对 Work Item 的一次执行尝试。Attempt 具有独立 ID、generation、租约和运行时绑定。Agent UID 只提供消息路由和认证 principal，不是单 session 锁；同一 Agent 可以并发执行多个独立 Attempt，前提是每个 Attempt 使用独立的 generation、lease、Worktree 和 workspace lease。
 
 Worker 报告 `completed` 只是一个 observation。只有 Candidate Submission 被 durable commit 后，Attempt 才进入 `candidate_committed`；这仍不表示 Work Item 已被验收。
 

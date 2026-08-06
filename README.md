@@ -79,7 +79,7 @@ MVP 实现一个可热更新、可回滚的只读 Project Artifact，不实现�
 - **Candidate 已经被 durable inbox 接收并提交**；
 - **尚未观察到 Candidate，状态未知**。
 
-Conversation/topic 是持久通信容器，runtime session 是短命执行实例，Attempt 是一次带 generation/lease 的执行。断线、offline 或 ping timeout 只更新 `connection=disconnected` 并触发 reconciliation；只有 lease/liveness 阈值失效才进入 `control=suspect`。两者都绝不等于完成或失败。
+Conversation/topic 是持久通信容器，runtime session 是短命执行实例，Attempt 是一次带 generation/lease 的执行。一个 Agent identity 可以拥有多个同时存在的 Runtime Session 和 Attempt；Agent UID 仅用于路由/认证，不能作为单 session 或单并发槽位的判断。每个并发 Attempt 必须有独立 generation、lease、Worktree 和 workspace lease。断线、offline 或 ping timeout 只更新 `connection=disconnected` 并触发 reconciliation；只有 lease/liveness 阈值失效才进入 `control=suspect`。两者都绝不等于完成或失败。
 
 只有 Candidate Commit transaction 才会创建 `review_candidate` Action；只有 Work Item 达到 policy-defined terminal state 才会创建 `plan_next` Action。artifact 更新、watch、timer 和 reconnect 只唤醒 Controller，不能直接唤醒下一轮语义 Loop。
 
