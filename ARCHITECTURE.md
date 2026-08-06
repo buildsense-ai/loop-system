@@ -19,7 +19,7 @@
 
 当前 CatsCo 已具备可复用的基础：
 
-1. `agent_task` group 为每个任务创建独立 topic，并在创建时要求人类 owner + 一个 Agent；该条件在后续成员变更时并非可靠授权边界；
+1. owner 与 Agent 的私有 P2P topic 提供默认执行通道；standard group 仅在多个 Human 需要监督 Review 时显式使用。`agent_task` group 不属于当前 P0 Worker dispatch 路径，也不能作为可靠授权边界；
 2. Project 将多个 conversation topics 归组，但以 `owner_uid` 隔离且不复制消息；
 3. `ConversationTaskStatus` 提供 `run_id/state/summary/error/source_uid/expiry`；
 4. Bot SDK 能发布 task status、上传文件和发送文件消息；
@@ -116,7 +116,8 @@ Conversation/topic 是持久通信容器；Runtime Session 是短命连接与执
 Loop 不属于 CatsCo system-global namespace，而属于一个 Steward User Workspace：
 
 - Project 的 owner 是 Steward `owner_uid`；
-- Worker 来自该用户的 friend graph；
+- Loop 是 Human 显式 opt-in；Review 先验证 owner 的 OpenCLI 登录和可用 Worker；
+- Worker 来自该用户的 friend graph；没有合格 Worker 时，Review 请求作者提供 Agent UID，并通过 `friend-request` 建立 addressability 后重新发现；
 - Ledger/inbox/outbox/actions 都以 `owner_uid` 分区；
 - Controller 使用该用户委托的 capability，不持有全站用户凭据；
 - Artifact 由该用户创建、更新和分享；

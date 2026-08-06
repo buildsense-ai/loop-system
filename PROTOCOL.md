@@ -11,6 +11,12 @@
 - packet 可作为 CatsCo card/message 传输，但其 canonical projection 进入 Loop Ledger；
 - 大字段只保存引用和摘要，不复制完整 transcript 或原始日志。
 
+## 1.1 Current Operational Profile
+
+The protocol is entered only after the Human explicitly opts into Loop. Before registration, Review performs `opencli catsco me` auth preflight and checks `opencli catsco agents`; if no eligible Worker is visible, it asks the task author for an Agent UID and uses the owner's CatsCo friend relationship flow before continuing. Human input does not prescribe Worker count: Review prefers bounded fan-out for large, safely separable work and uses a single Work Item for small or tightly coupled work.
+
+Normal execution uses separate Review and Worker P2P topics. A standard group is an explicit Review supervision surface only. CatsCo friendship provides addressability, not Kernel authority; only committed Controller Actions and trusted Candidate/Review events advance the Loop. Pi subagents, XiaoBa ToolManager, and ad-hoc Agent RPC are outside the production protocol.
+
 ## 2. Loop Definition
 
 ```json

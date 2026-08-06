@@ -27,11 +27,11 @@ Explicitly unavailable:
 - real runtime launch/resume/cancel;
 - a production authority bridge for unattested/manual reviews; the pilot accepts reviews only through trusted CatsCo message attestation unless another explicit adapter is installed;
 - Dynamic Artifact writes from loopctl; Artifact discovery exists, while interactive create/update remains the Steward Agent's responsibility;
-- parallel Attempts and self-activation;
+- Controller-side atomic fan-out batches, durable cross-Work-Item integration barriers, Workspace Provisioner enforcement, and self-activation; Plugin-level fan-out/integration orchestration is available, but batch ingest and filesystem leases remain outside this MVP;
 
 Available with explicit P0 limits:
 
-- owner/Worker discovery and stable P2P topic resolution through `catsco me`, `catsco agents`, and `catsco open`;
+- owner/Worker discovery and stable P2P topic resolution through `catsco me`, `catsco agents`, and `catsco open`; Review performs auth preflight and may use the owner's `catsco friend-request` flow to add an author-provided Worker Agent before Loop registration;
 - idempotent sends to an existing CatsCo topic through `opencli catsco send --client-message-id ... --format json`; group sends additionally carry a structured `--mention usr<uid>` derived from the committed Action target;
 - bounded polling of each unique active Worker and Steward P2P topic through `opencli catsco messages --after-seq ... --limit 200 --format json`;
 - read-only operator projection through `catsco projects`, `project-sessions`, and `artifacts`.

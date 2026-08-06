@@ -27,13 +27,21 @@ discover → specify → assign → execute → candidate → review → accept 
 
 1. **Steward User Workspace**：一个独立 CatsCo user identity 是所有权边界，拥有自己的 friend graph、Projects、Loop namespace、Artifacts 和 sessions；
 2. **规划验收 Agent**：运行在该 User Workspace 中，发现问题、拆解工作、起草 GitHub issue、定义验收标准、审查最终 PR；
-3. **Worker Agents**：作为 Steward User 的朋友，在各自 CatsCo `agent_task` topic 和 session runtime 中执行一个有界任务；
+3. **Worker Agents**：作为 Steward User 的朋友，在各自 Worker P2P topic 和 session runtime 中执行一个有界任务；
 4. **User-scoped Loop Controller**：非 LLM 的确定性控制模块，只在该 `owner_uid` namespace 内负责跨 topic 转接、状态推进、幂等重试、租约和对账；
 5. **CatsCo Project**：Steward User 私有的内部 operator 投影；
 6. **User-owned Dynamic Artifact**：Steward User 创建并维护的动态 Artifact，稳定 URL 读取其最新脱敏 Projection；
 7. **GitHub**：代码、issue、PR、CI、review 和 merge 的事实来源，而不是完整运行时账本。
 
 不新增第三个常驻“接线员 Agent”，也不从零实现一套写权威看板。
+
+## 当前生产策略
+
+Loop 是显式 opt-in：Human 必须明确要求使用 Loop、启动 Loop、使用 `loopctl` 或请求 Controller/Worker 编排。普通需求保持在正常 Agent 工作流中，不创建 Work Item 或 Worker dispatch。
+
+进入 Loop 前，Review 先用 `opencli catsco me` 验证本机 CatsCo/OpenCLI 登录；失败时只提醒 Human 登录。随后 Review 用 `opencli catsco agents --format json` 选择可用 Worker。没有合格 Worker 时，Review 向任务作者请求一个 CatsCo Agent UID，并通过 `opencli catsco friend-request AGENT_UID` 建立好友关系；待对方接受并重新发现该 Agent 后才创建 Work Item。好友关系提供 addressability，不授予 Kernel authority。
+
+正常执行使用 Review 与 Worker 各自的 P2P topic。多人监工群仅是显式选择的 Review 人类可见性面；它不承担 Worker 执行。大任务在可安全拆成独立交付物、写入范围可隔离时优先 bounded fan-out；小任务或强耦合任务顺序执行。生产 Loop 不使用 Pi subagents、XiaoBa ToolManager 或额外 Agent RPC。
 
 ## 为什么仍然需要 Loop Controller
 

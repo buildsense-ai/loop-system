@@ -20,8 +20,9 @@ Loop 不等于一个长期存活的 Agent 进程。Agent session 可以结束和
 
 一个 Work Item 可以对应：
 
-- 一个 CatsCo Agent Task topic；
-- 零个或一个 GitHub issue；
+- 一个 Worker 私有 CatsCo P2P topic；
+- 可选的 Review 人类监督 group topic；
+- 零个或一个 GitHub issue;
 - 一个或多个执行 Attempt；
 - 零个或一个当前候选 PR。
 
@@ -51,7 +52,7 @@ Worker 报告 `completed` 只是一个 observation。只有 Candidate Submission
 
 ### Steward Agent
 
-运行在 Steward User Workspace 中的规划验收语义角色。负责：
+运行在 Steward User Workspace 中的规划验收语义角色。Loop 仅在 Human 明确选择时启用；进入 Loop 前 Steward 必须验证 CatsCo/OpenCLI 登录并发现可用 Worker。没有可用 Worker 时，它请求作者提供 Agent UID，通过 owner 的 friend graph 建立 addressability、重新发现并验证后再编排。负责：
 
 - 发现和定义问题；
 - 拆解 Work Items；
