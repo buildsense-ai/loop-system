@@ -43,11 +43,11 @@ afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, for
 function event(type: string, key: string, payload: unknown) {
   return { type, eventId: `event-${key}`, idempotencyKey: key, source: 'catsco', entityRef: 'work_item:wi-1', payload }
 }
-function registration() {
+function registration(workerTopicId = 'worker-topic', stewardTopicId = 'steward-topic') {
   return event('work_item_registered', 'register', {
     workItemId: 'wi-1', loopId: 'loop-1', profileId: 'product@1', terminalState: 'accepted', ...hashes,
     writeScope: ['src/**'], githubRepo: 'acme/repo', catscoProjectId: 'project-1',
-    workerTopicId: 'worker-topic', stewardTopicId: 'steward-topic'
+    workerTopicId, stewardTopicId, stewardPrincipal: 'catsco-user:574'
   })
 }
 function candidateEvent(key = 'candidate-polled') {
@@ -65,17 +65,18 @@ function reviewEvent(key = 'review-polled') {
     reviewedDeliverableDigest: 'deliverable-digest', acceptanceContractHash: hashes.acceptanceContractHash
   })
 }
-function bundle() {
+function bundle(runtimePrincipal = 'runtime-1') {
   return event('work_bundle_proposed', 'bundle', {
     workItemId: 'wi-1', expectedRevision: 1, attemptId: 'attempt-1', attemptNumber: 1, generation: 1,
-    runtimePrincipal: 'runtime-1', proofKeyId: 'key-1', proofPublicKey: 'unused',
+    runtimePrincipal, proofKeyId: 'key-1', proofPublicKey: 'unused',
     leaseExpiresAt: '2026-08-05T00:00:00.000Z',
     workBundle: { contractDigest: 'bundle-digest-1', instructions: 'work', deliverables: ['pull request'] }, ...hashes
   })
 }
-async function withOutbox(database: SqliteDatabase) {
-  ingest(database, 'owner-a', registration(), providers)
-  ingest(database, 'owner-a', bundle(), providers)
+async function withOutbox(database: SqliteDatabase, options: { group?: boolean } = {}) {
+  const topic = options.group ? 'grp_42' : 'worker-topic'
+  ingest(database, 'owner-a', registration(topic, options.group ? topic : 'steward-topic'), providers)
+  ingest(database, 'owner-a', bundle(options.group ? 'catsco-user:559' : 'runtime-1'), providers)
   await processPending(database, 'owner-a', processingAdapters)
   return database.prepare('SELECT * FROM outbox').get() as Record<string, unknown>
 }
@@ -97,7 +98,9 @@ describe('OpenCLI CatsCo P0 adapter', () => {
         contentDigest: 'digest-1', serverConfirmed: true, serverReceivedAt: serverTime }
     ], calls))
 
-    await expect(adapter.sendExistingTopic('topic-1', '{"exact":true}', 'client-1')).resolves.toMatchObject({
+    await expect(adapter.sendExistingTopic({
+      topicId: 'topic-1', content: '{"exact":true}', clientMsgId: 'client-1'
+    })).resolves.toMatchObject({
       messageId: '41', duplicate: true, contentDigest: 'digest-1'
     })
     await expect(adapter.findMessage('topic-1', 'client-1')).resolves.toMatchObject({
@@ -106,6 +109,21 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     expect(calls).toEqual([
       ['catsco', 'send', 'topic-1', '{"exact":true}', '--client-message-id', 'client-1', '--format', 'json'],
       ['catsco', 'message-receipt', 'topic-1', '--client-message-id', 'client-1', '--format', 'json']
+    ])
+  })
+
+  it('passes a canonical structured mention when sending to a group', async () => {
+    const calls: string[][] = []
+    const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{
+      messageId: '42', clientMsgId: 'client-2', seqId: '42', duplicate: false, contentDigest: 'digest-2'
+    }], calls))
+
+    await adapter.sendExistingTopic({
+      topicId: 'grp_42', content: '{"exact":true}', clientMsgId: 'client-2', mention: 'usr559'
+    })
+    expect(calls[0]).toEqual([
+      'catsco', 'send', 'grp_42', '{"exact":true}', '--client-message-id', 'client-2',
+      '--mention', 'usr559', '--format', 'json'
     ])
   })
 
@@ -156,13 +174,15 @@ describe('content-addressed outbox sends', () => {
   class ReceiptAdapter implements CatscoAdapter {
     sends = 0
     sentIds: string[] = []
+    sentMentions: Array<string | undefined> = []
     constructor(readonly found: CatscoMessageReceipt | null) {}
     async me() { return { uid: 'owner-a' } }
     async findMessage() { return this.found }
-    async sendExistingTopic(_topic: string, content: string, clientMsgId: string) {
+    async sendExistingTopic(request: { content: string; clientMsgId: string; mention?: string }) {
       this.sends++
-      this.sentIds.push(clientMsgId)
-      return { messageId: 'sent-1', clientMsgId, duplicate: false, contentDigest: sha256(content) }
+      this.sentIds.push(request.clientMsgId)
+      this.sentMentions.push(request.mention)
+      return { messageId: 'sent-1', clientMsgId: request.clientMsgId, duplicate: false, contentDigest: sha256(request.content) }
     }
   }
 
@@ -183,6 +203,39 @@ describe('content-addressed outbox sends', () => {
     expect(wakeAgentPostcondition('owner-a', effect)).toMatchObject({
       transportVersion: 'catsco-opencli-p0-v1', ownerUid: 'owner-a', targetTopicId: 'topic-1', effectKey: 'effect-1'
     })
+  })
+
+  it('binds a group target mention into the transport identity', () => {
+    const groupEffect = {
+      type: 'wake_agent', effectKey: 'effect-group', actionId: 'action-group', actionWorkItemRevision: 1,
+      targetPrincipal: 'catsco-user:559', targetDigest: 'target-group', targetTopicId: 'grp_42', packetDigest: 'packet-group'
+    } satisfies WakeAgentEffect
+    const expected = wakeAgentPostcondition('owner-a', groupEffect)
+    expect(expected).toMatchObject({ transportVersion: 'catsco-opencli-group-v2', targetMention: 'usr559' })
+    expect(expected.clientMsgId).not.toBe(wakeAgentPostcondition('owner-a', {
+      ...groupEffect, targetPrincipal: 'catsco-user:574'
+    }).clientMsgId)
+  })
+
+  it('sends a group Action with the target principal as structured mention', async () => {
+    const database = db()
+    const row = await withOutbox(database, { group: true })
+    const expected = JSON.parse(String(row.postcondition_json)) as { clientMsgId: string; contentDigest: string }
+    const adapter = new ReceiptAdapter(null)
+    await expect(runOutbox(database, 'owner-a', { catsco: adapter }, 1, {
+      now: () => now, token: () => 'claim'
+    })).resolves.toMatchObject({ satisfied: 1, retried: 0 })
+    expect(adapter.sentMentions).toEqual(['usr559'])
+    expect(adapter.sentIds).toEqual([expected.clientMsgId])
+    database.close()
+  })
+
+  it('fails closed for a group Action with a non-CatsCo target principal', async () => {
+    const effect = {
+      type: 'wake_agent', effectKey: 'effect-invalid', actionId: 'action-invalid', actionWorkItemRevision: 1,
+      targetPrincipal: 'runtime-1', targetDigest: 'target-invalid', targetTopicId: 'grp_42', packetDigest: 'packet-invalid'
+    } satisfies WakeAgentEffect
+    expect(() => wakeAgentPostcondition('owner-a', effect)).toThrow('numeric CatsCo target principal')
   })
 
   it('safely resends when a local-registry receipt is not server confirmed', async () => {

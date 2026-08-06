@@ -3,7 +3,8 @@ import type {
   CatscoMessageAttestation,
   CatscoMessageReceipt,
   CatscoObservation,
-  CatscoPollResult
+  CatscoPollResult,
+  CatscoSendRequest
 } from './catsco.js'
 import { sha256 } from '../lib/digest.js'
 
@@ -16,6 +17,7 @@ export interface LocalPilotSend {
   topicId: string
   clientMsgId: string
   content: string
+  mention?: string
   receipt: CatscoMessageReceipt
 }
 
@@ -64,7 +66,8 @@ export class LocalPilotCatscoAdapter implements CatscoAdapter {
     return this.receipts.get(this.receiptKey(topicId, clientMsgId)) ?? null
   }
 
-  async sendExistingTopic(topicId: string, content: string, clientMsgId: string): Promise<CatscoMessageReceipt> {
+  async sendExistingTopic(request: CatscoSendRequest): Promise<CatscoMessageReceipt> {
+    const { topicId, content, clientMsgId, mention } = request
     const key = this.receiptKey(topicId, clientMsgId)
     const existing = this.receipts.get(key)
     if (existing) return { ...existing, duplicate: true }
@@ -82,7 +85,7 @@ export class LocalPilotCatscoAdapter implements CatscoAdapter {
       serverReceivedAt
     }
     this.receipts.set(key, receipt)
-    this.sends.push({ topicId, clientMsgId, content, receipt })
+    this.sends.push({ topicId, clientMsgId, content, ...(mention ? { mention } : {}), receipt })
     return receipt
   }
 

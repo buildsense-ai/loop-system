@@ -22,9 +22,15 @@ export interface CatscoPollResult {
   observations: CatscoObservation[]
   nextCursor: unknown
 }
+export interface CatscoSendRequest {
+  topicId: string
+  content: string
+  clientMsgId: string
+  mention?: string
+}
 export interface CatscoAdapter {
   me(): Promise<CatscoIdentity>
-  sendExistingTopic(topicId: string, content: string, clientMsgId: string): Promise<CatscoMessageReceipt>
+  sendExistingTopic(request: CatscoSendRequest): Promise<CatscoMessageReceipt>
   findMessage(topicId: string, clientMsgId: string): Promise<CatscoMessageReceipt | null>
   poll?(topicId: string, cursor: unknown): Promise<CatscoPollResult>
 }

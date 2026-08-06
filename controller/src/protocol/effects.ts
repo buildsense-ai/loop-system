@@ -27,22 +27,36 @@ export function wakeAgentContent(effect: WakeAgentEffect): string {
 }
 
 export const CATSCO_OPENCLI_TRANSPORT_VERSION = 'catsco-opencli-p0-v1'
+export const CATSCO_OPENCLI_GROUP_TRANSPORT_VERSION = 'catsco-opencli-group-v2'
+
+export function wakeAgentMention(effect: WakeAgentEffect): string | undefined {
+  if (!effect.targetTopicId.startsWith('grp_')) return undefined
+  const match = /^catsco-user:([1-9]\d*)$/.exec(effect.targetPrincipal)
+  if (!match) throw new Error('group Action requires a numeric CatsCo target principal')
+  return `usr${match[1]}`
+}
 
 export function wakeAgentPostcondition(ownerUid: string, effect: WakeAgentEffect) {
   const contentDigest = sha256(wakeAgentContent(effect))
+  const targetMention = wakeAgentMention(effect)
+  const transportVersion = targetMention
+    ? CATSCO_OPENCLI_GROUP_TRANSPORT_VERSION
+    : CATSCO_OPENCLI_TRANSPORT_VERSION
   const identity = canonicalize({
-    transportVersion: CATSCO_OPENCLI_TRANSPORT_VERSION,
-    ownerUid,
-    targetTopicId: effect.targetTopicId,
-    effectKey: effect.effectKey,
-    contentDigest
-  })
-  return {
-    transportVersion: CATSCO_OPENCLI_TRANSPORT_VERSION,
+    transportVersion,
     ownerUid,
     targetTopicId: effect.targetTopicId,
     effectKey: effect.effectKey,
     contentDigest,
+    ...(targetMention ? { targetMention } : {})
+  })
+  return {
+    transportVersion,
+    ownerUid,
+    targetTopicId: effect.targetTopicId,
+    effectKey: effect.effectKey,
+    contentDigest,
+    ...(targetMention ? { targetMention } : {}),
     clientMsgId: `loopctl:${sha256(identity)}`
   }
 }

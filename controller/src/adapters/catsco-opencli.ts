@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { runProcess, type ProcessResult } from '../lib/process.js'
 import { ingressEventSchema } from '../protocol/events.js'
-import type { CatscoAdapter, CatscoMessageReceipt, CatscoPollResult } from './catsco.js'
+import type { CatscoAdapter, CatscoMessageReceipt, CatscoPollResult, CatscoSendRequest } from './catsco.js'
 
 const meSchema = z.object({ uid: z.union([z.string(), z.number()]) }).passthrough()
 const receiptSchema = z.object({
@@ -91,11 +91,13 @@ export class OpenCliCatscoAdapter implements CatscoAdapter {
     }
   }
 
-  async sendExistingTopic(topicId: string, content: string, clientMsgId: string): Promise<CatscoMessageReceipt> {
-    return this.receipt(
-      await this.json(['catsco', 'send', topicId, content, '--client-message-id', clientMsgId]),
-      clientMsgId
-    )
+  async sendExistingTopic(request: CatscoSendRequest): Promise<CatscoMessageReceipt> {
+    const args = [
+      'catsco', 'send', request.topicId, request.content,
+      '--client-message-id', request.clientMsgId
+    ]
+    if (request.mention) args.push('--mention', request.mention)
+    return this.receipt(await this.json(args), request.clientMsgId)
   }
 
   async findMessage(topicId: string, clientMsgId: string): Promise<CatscoMessageReceipt | null> {

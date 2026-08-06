@@ -106,6 +106,38 @@ async function reachCandidate(db: SqliteDatabase, terminalState: 'accepted' | 'c
   await process(db)
 }
 
+it('durably rejects non-addressable group principals without blocking later inbox rows', async () => {
+  const { db } = database()
+  const invalidRegistration = registration()
+  invalidRegistration.payload.workerTopicId = 'grp_1400'
+  invalidRegistration.payload.stewardTopicId = 'grp_1400'
+  invalidRegistration.payload.stewardPrincipal = 'steward'
+  ingest(db, 'owner-a', invalidRegistration, providers)
+  ingest(db, 'owner-a', registration('register-after-invalid', 'accepted', 'wi-2'), { ...providers, id: prefix => `${prefix}-later` })
+  const receipts = await process(db)
+  expect(receipts).toHaveLength(2)
+  expect(receipts[0]).toMatchObject({ status: 'rejected', rejectionCode: 'invalid_group_target_principal' })
+  expect(receipts[1]).toMatchObject({ status: 'committed' })
+  expect(db.prepare("SELECT status FROM inbox WHERE event_id='event-register'").get()).toEqual({ status: 'rejected' })
+  db.close()
+})
+
+it('durably rejects a group bundle with a non-addressable Worker principal', async () => {
+  const { db } = database()
+  const groupRegistration = registration()
+  groupRegistration.payload.workerTopicId = 'grp_1400'
+  groupRegistration.payload.stewardTopicId = 'grp_1400'
+  groupRegistration.payload.stewardPrincipal = 'catsco-user:574'
+  ingest(db, 'owner-a', groupRegistration, providers)
+  const badBundle = bundle()
+  badBundle.payload.runtimePrincipal = 'runtime-1'
+  ingest(db, 'owner-a', badBundle, { ...providers, id: prefix => `${prefix}-bad-bundle` })
+  const receipts = await process(db)
+  expect(receipts[1]).toMatchObject({ status: 'rejected', rejectionCode: 'invalid_group_target_principal' })
+  expect(db.prepare('SELECT count(*) count FROM outbox').get()).toEqual({ count: 0 })
+  db.close()
+})
+
 it('loads only package-relative migrations from an unrelated working directory', () => {
   const unrelated = mkdtempSync(join(tmpdir(), 'loopctl-unrelated-cwd-'))
   dirs.push(unrelated)
@@ -399,11 +431,11 @@ class FakeCatsco implements CatscoAdapter {
   constructor(private failFirst = false, private uid = 'owner-a') {}
   async me() { return { uid: this.uid } }
   async findMessage(_topic: string, clientMsgId: string) { return this.messages.get(clientMsgId) ?? null }
-  async sendExistingTopic(_topic: string, content: string, clientMsgId: string) {
+  async sendExistingTopic(request: { content: string; clientMsgId: string }) {
     this.sends++
     if (this.failFirst && this.sends === 1) throw new Error('temporary failure')
-    const receipt = { messageId: `message-${this.sends}`, clientMsgId, duplicate: false, contentDigest: sha256(content) }
-    this.messages.set(clientMsgId, receipt)
+    const receipt = { messageId: `message-${this.sends}`, clientMsgId: request.clientMsgId, duplicate: false, contentDigest: sha256(request.content) }
+    this.messages.set(request.clientMsgId, receipt)
     return receipt
   }
 }

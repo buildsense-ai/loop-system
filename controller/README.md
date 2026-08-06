@@ -23,7 +23,7 @@ Implemented:
 
 Explicitly unavailable:
 
-- automatic `agent_task` creation/project assignment; this is not required for the first pilot because existing Worker P2P topics can be resolved through `catsco agents/open`;
+- automatic Kernel-owned task/topic creation or project assignment; Review may create or reuse a standard collaboration group through OpenCLI, then register its verified `grp_*` topic in the Plan;
 - real runtime launch/resume/cancel;
 - a production authority bridge for unattested/manual reviews; the pilot accepts reviews only through trusted CatsCo message attestation unless another explicit adapter is installed;
 - Dynamic Artifact writes from loopctl; Artifact discovery exists, while interactive create/update remains the Steward Agent's responsibility;
@@ -32,7 +32,7 @@ Explicitly unavailable:
 Available with explicit P0 limits:
 
 - owner/Worker discovery and stable P2P topic resolution through `catsco me`, `catsco agents`, and `catsco open`;
-- idempotent sends to an existing CatsCo topic through `opencli catsco send --client-message-id ... --format json`;
+- idempotent sends to an existing CatsCo topic through `opencli catsco send --client-message-id ... --format json`; group sends additionally carry a structured `--mention usr<uid>` derived from the committed Action target;
 - bounded polling of each unique active Worker and Steward P2P topic through `opencli catsco messages --after-seq ... --limit 200 --format json`;
 - read-only operator projection through `catsco projects`, `project-sessions`, and `artifacts`.
 
@@ -113,7 +113,7 @@ node dist/cli.js reconcile --enqueue-only
 node dist/cli.js doctor --json
 ```
 
-Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. The P0 transport cannot create tasks/topics and has only the local-registry receipt semantics described above.
+Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. Review can create and verify a standard collaboration group before registration; the deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
 
 ### Event examples
 
@@ -242,4 +242,4 @@ An attested review must arrive on `stewardTopicId` from the sender whose `catsco
 
 ## Integration gaps
 
-The P0 OpenCLI transport enables existing-topic wakes and the P2P authority pilot, but CatsCo still lacks a server-authoritative lookup by client message ID and the backend history window is bounded. Crash-safe automatic task creation still needs an owner-scoped external Work Item create-or-find contract. Task/topic creation, Dynamic Artifact writes, a runtime launch/resume/cancel wrapper, and unattested reviewer authority remain unavailable. The controller does not use `run_id`/`body_id` as authority and never treats task status `completed` as completion. Ed25519 remains the default proof mode; CatsCo-message authority is explicit and retains the same GitHub, revision, generation, lease, principal, and contract fencing.
+The P0 OpenCLI transport enables P2P wakes and structured-mention wakes in a verified standard collaboration group, but CatsCo still lacks a server-authoritative lookup by client message ID and the backend history window is bounded. Crash-safe automatic task creation still needs an owner-scoped external Work Item create-or-find contract. Task/topic creation, Dynamic Artifact writes, a runtime launch/resume/cancel wrapper, and unattested reviewer authority remain unavailable. The controller does not use `run_id`/`body_id` as authority and never treats task status `completed` as completion. Ed25519 remains the default proof mode; CatsCo-message authority is explicit and retains the same GitHub, revision, generation, lease, principal, and contract fencing.

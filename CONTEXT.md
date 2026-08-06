@@ -29,6 +29,12 @@ Loop 不等于一个长期存活的 Agent 进程。Agent session 可以结束和
 
 CatsCo 中持久存在的通信容器（topic）。Conversation 可以跨越断线、重连和多个 Runtime Session；它不是一次执行 Attempt。
 
+### Collaboration Group
+
+由 Steward User 创建或复用、包含人类、Review Agent 和一个或多个 Worker Agent 的 CatsCo standard group Conversation。
+
+Collaboration Group 是共享可见性与地址路由容器，不是 Kernel 状态或完成证据。在多成员群中，只有 CatsCo message envelope 的结构化 mention 才能唤醒目标 Agent；可见文本中的 `@名字` 不构成 activation、authority 或 Evidence。每个 committed Action 只指向一个 Principal，Controller 将该 Principal 映射为当前消息的结构化 mention。
+
 ### Runtime Session
 
 某个 Agent runtime 的短命执行实例。它可以连接、断线、重连或被替换。Runtime Session 的在线状态不表示 Work Item 是否完成。

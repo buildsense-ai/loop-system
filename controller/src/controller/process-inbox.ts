@@ -13,7 +13,7 @@ import { loadSnapshot } from '../store/repositories.js'
 import { decide } from '../kernel/decide.js'
 import { assertPlan } from '../kernel/invariants.js'
 import { canonicalize } from '../lib/canonical-json.js'
-import type { AttemptSnapshot, WorkItemSnapshot } from '../kernel/types.js'
+import type { AttemptSnapshot, KernelSnapshot, WorkItemSnapshot } from '../kernel/types.js'
 import { wakeAgentPostcondition, type WakeAgentEffect } from '../protocol/effects.js'
 import { renderActionPacket } from './action-packets.js'
 
@@ -46,6 +46,20 @@ function rejectInboxWithin(
     WHERE owner_uid=? AND inbox_id=? AND status='pending'`
   ).run(code, canonicalize(receipt), row.trusted_ingress_at, ownerUid, row.inbox_id)
   return receipt
+}
+
+const numericCatscoPrincipal = /^catsco-user:[1-9]\d*$/
+
+function invalidGroupPrincipal(event: KernelEvent, snapshot: KernelSnapshot): boolean {
+  if (event.type === 'work_item_registered') {
+    const sharedGroup = event.payload.workerTopicId === event.payload.stewardTopicId && event.payload.workerTopicId.startsWith('grp_')
+    return sharedGroup && (!event.payload.stewardPrincipal || !numericCatscoPrincipal.test(event.payload.stewardPrincipal))
+  }
+  if (event.type === 'work_bundle_proposed' && snapshot.workItem) {
+    const groupTopic = snapshot.workItem.workerTopicId.startsWith('grp_')
+    return groupTopic && !numericCatscoPrincipal.test(event.payload.runtimePrincipal)
+  }
+  return false
 }
 
 function saveWork(
@@ -223,6 +237,9 @@ export async function processInboxRow(
     const workItemId = event.type === 'reconcile_tick'
       ? event.entityRef.replace(/^work_item:/, '')
       : event.payload.workItemId
+    if (invalidGroupPrincipal(event, loadSnapshot(db, ownerUid, workItemId))) {
+      return rejectInboxWithin(db, ownerUid, fresh, 'invalid_group_target_principal')
+    }
     if (event.type === 'work_bundle_proposed') {
       const existingAttempt = db.prepare(`SELECT work_item_id FROM attempts WHERE owner_uid=? AND attempt_id=?`)
         .get(ownerUid, event.payload.attemptId) as { work_item_id: string } | undefined

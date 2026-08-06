@@ -124,7 +124,12 @@ export async function runOutbox(
       if (!receipt) {
         assertCurrentAction(db, ownerUid, row)
         try {
-          const sent = await adapter.sendExistingTopic(effect.targetTopicId, content, expected.clientMsgId)
+          const sent = await adapter.sendExistingTopic({
+            topicId: effect.targetTopicId,
+            content,
+            clientMsgId: expected.clientMsgId,
+            ...(expected.targetMention ? { mention: expected.targetMention } : {})
+          })
           receipt = validateReceipt(sent, expected.clientMsgId, expected.contentDigest, false)
         } catch (sendError) {
           const reconciled = await adapter.findMessage(effect.targetTopicId, expected.clientMsgId)
