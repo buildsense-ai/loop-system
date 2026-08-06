@@ -52,8 +52,8 @@ const numericCatscoPrincipal = /^catsco-user:[1-9]\d*$/
 
 function invalidGroupPrincipal(event: KernelEvent, snapshot: KernelSnapshot): boolean {
   if (event.type === 'work_item_registered') {
-    const sharedGroup = event.payload.workerTopicId === event.payload.stewardTopicId && event.payload.workerTopicId.startsWith('grp_')
-    return sharedGroup && (!event.payload.stewardPrincipal || !numericCatscoPrincipal.test(event.payload.stewardPrincipal))
+    const groupSteward = event.payload.stewardTopicId.startsWith('grp_')
+    return groupSteward && (!event.payload.stewardPrincipal || !numericCatscoPrincipal.test(event.payload.stewardPrincipal))
   }
   if (event.type === 'work_bundle_proposed' && snapshot.workItem) {
     const groupTopic = snapshot.workItem.workerTopicId.startsWith('grp_')
