@@ -39,7 +39,7 @@ discover → specify → assign → execute → candidate → review → accept 
 
 CatsCo 已经支持：
 
-- 每个任务创建独立的 `agent_task` group topic；
+- 默认使用 Review 与 Worker 各自的 P2P topic；只有多人需要共同监工时，才显式选择已有的 CatsCo group 作为 Review 的 steward topic；
 - 创建时要求人类 owner + 一个 Agent，但后续成员变更仍需 Controller 对账，不能把该限制当成授权边界；
 - Project 对多个 task topics 进行归组；
 - Bot 发布 `running/waiting/completed/failed/...` task status；

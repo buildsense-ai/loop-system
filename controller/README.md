@@ -23,7 +23,7 @@ Implemented:
 
 Explicitly unavailable:
 
-- automatic Kernel-owned task/topic creation or project assignment; Review may create or reuse a standard collaboration group through OpenCLI, then register its verified `grp_*` topic in the Plan;
+- automatic Kernel-owned task/topic creation or project assignment; P2P topics are the default, while an existing `grp_*` topic may be explicitly selected as the Review human-supervision surface;
 - real runtime launch/resume/cancel;
 - a production authority bridge for unattested/manual reviews; the pilot accepts reviews only through trusted CatsCo message attestation unless another explicit adapter is installed;
 - Dynamic Artifact writes from loopctl; Artifact discovery exists, while interactive create/update remains the Steward Agent's responsibility;
@@ -113,7 +113,7 @@ node dist/cli.js reconcile --enqueue-only
 node dist/cli.js doctor --json
 ```
 
-Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. Review can create and verify a standard collaboration group before registration; the deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
+Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. P2P topics are the default; an explicitly selected group Steward topic must already exist and be verified by the human/Review workflow. The deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
 
 ### Event examples
 
@@ -138,8 +138,8 @@ All external JSON is strict schema-validated. Hash values below are illustrative
     "writeScope": ["src/**", "tests/**"],
     "githubRepo": "owner/repo",
     "catscoProjectId": "existing-project",
-    "workerTopicId": "example-worker-topic",
-    "stewardTopicId": "example-steward-topic",
+    "workerTopicId": "p2p_275_559",
+    "stewardTopicId": "p2p_275_574",
     "stewardPrincipal": "catsco-user:example-steward"
   }
 }
