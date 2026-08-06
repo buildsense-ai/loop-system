@@ -34,7 +34,7 @@ CatsCo 中持久存在的通信容器（topic）。Conversation 可以跨越断�
 
 由 Steward User 创建或复用、包含人类、Review Agent 和一个或多个 Worker Agent 的 CatsCo standard group Conversation。
 
-Collaboration Group 是人类与 Steward/Review Agent 的共享可见性容器，不是 Worker 执行队列、Kernel 状态或完成证据。在多成员群中，只有 CatsCo message envelope 的结构化 mention 才能唤醒目标 Review Agent；可见文本中的 `@名字` 不构成 activation、authority 或 Evidence。Worker execution 继续使用其独立的 P2P Conversation。每个 committed Action 只指向一个 Principal，Controller 仅在目标 Conversation 为 group 时将该 Principal 映射为结构化 mention。
+Collaboration Group 是人类与 Steward/Review Agent 的共享可见性容器，不是 Worker 执行队列、Kernel 状态或完成证据。在多成员群中，只有 CatsCo message envelope 的结构化 mention 才能唤醒目标 Review Agent；可见文本中的 `@名字` 不构成 activation、authority 或 Evidence。并发 Worker execution 使用专属 `agent_task` Conversation：每个 Attempt 创建一个仅含 Review User 与一个 Worker Agent 的 `grp_<id>` topic；它不是人类协作群。每个 committed Action 只指向一个 Principal，Controller 在目标 Conversation 为 group 时将该 Principal 映射为结构化 mention。
 
 ### Runtime Session
 
