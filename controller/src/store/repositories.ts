@@ -33,9 +33,12 @@ export function statusRows(db: SqliteDatabase, ownerUid: string) {
     inbox: counts('inbox'),
     ingressConflicts: db.prepare('SELECT count(*) count FROM ingress_conflicts WHERE owner_uid=?').get(ownerUid),
     outbox: db.prepare('SELECT state status,count(*) count FROM outbox WHERE owner_uid=? GROUP BY state').all(ownerUid),
-    workItems: db.prepare('SELECT work_item_id workItemId,revision,state,profile_id profileId FROM work_items WHERE owner_uid=? ORDER BY work_item_id').all(ownerUid),
+    workItems: db.prepare('SELECT work_item_id workItemId,revision,state,loop_id loopId,profile_id profileId FROM work_items WHERE owner_uid=? ORDER BY work_item_id').all(ownerUid),
     attempts: db.prepare('SELECT attempt_id attemptId,work_item_id workItemId,generation,control_state controlState,reported_state reportedState,connection_state connectionState FROM attempts WHERE owner_uid=?').all(ownerUid),
-    candidates: db.prepare('SELECT candidate_id candidateId,work_item_id workItemId,work_item_revision workItemRevision FROM candidates WHERE owner_uid=?').all(ownerUid),
+    candidates: db.prepare(`SELECT c.candidate_id candidateId,c.work_item_id workItemId,c.work_item_revision workItemRevision,
+      c.deliverable_digest digest,json_extract(c.deliverable_json,'$.repository') repository,
+      json_extract(c.deliverable_json,'$.prNumber') prNumber,json_extract(c.deliverable_json,'$.headSha') headSha
+      FROM candidates c WHERE c.owner_uid=?`).all(ownerUid),
     actions: db.prepare('SELECT action_id actionId,action_key actionKey,kind,state,work_item_id workItemId,work_item_revision workItemRevision FROM actions WHERE owner_uid=?').all(ownerUid)
   }
 }
