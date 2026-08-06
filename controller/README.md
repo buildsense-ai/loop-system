@@ -61,7 +61,7 @@ $LOOPCTL_STATE_ROOT/config.json
 $LOOPCTL_STATE_ROOT/catsco/<verified-owner-uid>/loop.db
 ```
 
-No command accepts an owner UID. `init` derives it from the authenticated `opencli catsco me` result. Tokens, passwords, and runtime private keys are never stored.
+No command accepts an owner UID. `init` and every stateful command derive the active namespace from the current authenticated `opencli catsco me` result; the configured `ownerUid` is only a legacy compatibility field and is never the authority source. Tokens, passwords, and runtime private keys are never stored.
 
 ## Install and build
 
@@ -96,7 +96,7 @@ This proves **only the local controller pipeline**: real migrations, durable ing
 
 ## CLI workflow
 
-An authenticated CatsCo browser/OpenCLI session is required for `init`, `doctor`, attempted effects, and reconciliation. Reconciliation calls `catsco me` once, verifies the authenticated UID before polling or cursor changes, then deduplicates all active Worker and Steward topics. Each topic has one durable seq cursor, advanced only after durable attested ingest. Ambient `gh` authentication is required for Candidate, review, and merge/close readback. Unattested review authority remains deliberately unavailable by default.
+An authenticated CatsCo browser/OpenCLI session is required for `init`, `doctor`, stateful commands, attempted effects, and reconciliation. Changing the authenticated user selects that user's isolated `catsco/<owner_uid>/loop.db` under the same state root; it does not read or mutate another user's namespace. Reconciliation calls `catsco me` once, verifies the authenticated UID before polling or cursor changes, then deduplicates all active Worker and Steward topics. Each topic has one durable seq cursor, advanced only after durable attested ingest. Ambient `gh` authentication is required for Candidate, review, and merge/close readback. Unattested review authority remains deliberately unavailable by default.
 
 ```bash
 export LOOPCTL_STATE_ROOT="$HOME/.local/state/loopctl"
