@@ -50,6 +50,15 @@ Worker 报告 `completed` 只是一个 observation。只有 Candidate Submission
 
 以一个持久 CatsCo user identity 为所有权边界的工作空间。它拥有自己的 friend graph、Projects、Loop Ledger namespace、Controller delegation、Artifacts 和 sessions。资源必须以 `owner_uid` 分区；即使底层由共享进程或数据库承载，也不存在跨用户的 system-global Loop 或 Artifact writer。
 
+### Dual Review Identity
+
+一个 Review 角色可以同时拥有两个不同的 CatsCo principal，且两者职责不可混淆：
+
+- **Human-facing Review Bot**：接收 Human 的自然语言需求、展示进度、给出最终反馈；
+- **Worker-facing Review User**：通过受认证 OpenCLI 拥有 friend graph、Project、agent_task Conversation 和 `owner_uid` Controller namespace，并与 Worker Agent 调度和接收执行证据。
+
+例如，Human 通过 Bot `574` 与 Review 交互，而 Review 通过 User `602` 调度 Worker `559`。`owner_uid=602` 只表示 Worker/control-plane 资源所有权，不代表 Bot 574 消失，也不代表 602 是 Human-facing Agent。Controller、Project 和 Attempt 绑定 Review User；Human-facing narrative 绑定 Review Bot。
+
 ### Steward Agent
 
 运行在 Steward User Workspace 中的规划验收语义角色。Loop 仅在 Human 明确选择时启用；进入 Loop 前 Steward 必须验证 CatsCo/OpenCLI 登录并发现可用 Worker。没有可用 Worker 时，它请求作者提供 Agent UID，通过 owner 的 friend graph 建立 addressability、重新发现并验证后再编排。负责：
