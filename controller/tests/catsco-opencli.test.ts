@@ -452,6 +452,32 @@ describe('CatsCo reconciliation cursor safety', () => {
     database.close()
   })
 
+  it('reconciles only the worker topic when explicitly requested for legacy recovery', async () => {
+    const database = db()
+    ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
+    await processPending(database, 'owner-a', processingAdapters)
+    const observed = candidateEvent('worker-only-recovery')
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      sendExistingTopic: async () => { throw new Error('not used') },
+      findMessage: async () => null,
+      poll: async topicId => {
+        if (topicId === 'steward-topic') throw new Error('steward topic is inaccessible')
+        return { observations: [{ event: observed, attestation: {
+          topicId, seqId: '1', senderUid: '559', serverReceivedAt: serverTime
+        } }], nextCursor: '1' }
+      }
+    }
+    await expect(reconcile(database, 'owner-a', adapter, providers, undefined, { topicScope: 'worker' }))
+      .resolves.toMatchObject({ status: 'enqueued', observations: 1 })
+    expect(database.prepare("SELECT cursor_json FROM source_cursors WHERE scope_key='worker-topic'").get())
+      .toEqual({ cursor_json: '"1"' })
+    expect(database.prepare("SELECT count(*) count FROM source_cursors WHERE scope_key='steward-topic'").get())
+      .toEqual({ count: 0 })
+    database.close()
+  })
+
   it('does not advance a topic cursor when observation attestation authority fails', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)

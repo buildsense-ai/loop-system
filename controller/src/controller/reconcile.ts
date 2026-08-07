@@ -10,7 +10,7 @@ export async function reconcile(
   adapter: CatscoAdapter,
   providers?: Providers,
   workItemId?: string,
-  options: { runtimeStartTimeoutMs?: number } = {}
+  options: { runtimeStartTimeoutMs?: number; topicScope?: 'all' | 'worker' } = {}
 ) {
   const effectiveProviders = providers ?? defaultProviders
   if (!adapter.poll) {
@@ -24,7 +24,9 @@ export async function reconcile(
     WHERE owner_uid=? AND state NOT IN ('accepted','closed') ${workItemId ? 'AND work_item_id=?' : ''}`
   const params = workItemId ? [ownerUid, workItemId] : [ownerUid]
   const items = db.prepare(sql).all(...params) as { worker_topic_id: string; steward_topic_id: string }[]
-  const topics = [...new Set(items.flatMap(item => [item.worker_topic_id, item.steward_topic_id]))]
+  const topics = [...new Set(items.flatMap(item => options.topicScope === 'worker'
+    ? [item.worker_topic_id]
+    : [item.worker_topic_id, item.steward_topic_id]))]
   const polled: { topicId: string; observations: { event: IngressEvent; attestation: CatscoMessageAttestation }[]; nextCursor: unknown }[] = []
   for (const topicId of topics) {
     const cursorRow = db.prepare(
