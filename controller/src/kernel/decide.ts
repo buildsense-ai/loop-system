@@ -60,6 +60,20 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
     if (event.type === 'catsco_task_status_observed') nextAttempt.reportedState = event.payload.state === 'completed' ? 'completion_reported' : event.payload.state
     return { kind: 'commit', expectedRevision: work.revision, nextAttempt, actions: [], effects: [], receiptFields: { workItemId: work.workItemId, workItemRevision: work.revision } }
   }
+  if (event.type === 'attempt_abandoned') {
+    const p = event.payload
+    if (!attempt || attempt.attemptId !== p.attemptId) return reject('attempt_mismatch', work.revision)
+    if (attempt.generation !== p.generation) return reject('stale_generation', work.revision)
+    if (snapshot.candidate?.attemptId === attempt.attemptId && snapshot.candidate.generation === attempt.generation) return reject('candidate_exists', work.revision)
+    if (p.expectedRevision !== work.revision) return reject('stale_work_item_revision', work.revision)
+    if (work.state !== 'in_progress' || attempt.controlState !== 'running') return reject('attempt_not_running', work.revision)
+    if (Date.parse(event.trustedIngressAt) <= Date.parse(attempt.leaseExpiresAt)) return reject('attempt_not_expired', work.revision)
+    const revision = work.revision + 1
+    return { kind: 'commit', expectedRevision: work.revision,
+      nextWorkItem: { ...work, revision, state: 'ready' },
+      nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'abandoned', reportedState: 'abandoned', connectionState: 'disconnected' },
+      actions: [], effects: [], receiptFields: { workItemId: work.workItemId, workItemRevision: revision, attemptId: attempt.attemptId, generation: attempt.generation } }
+  }
   if (event.type === 'candidate_submitted') return reject('candidate_not_validated', work.revision)
   if (event.type === 'candidate_validated') {
     const p = event.payload

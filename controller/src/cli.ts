@@ -8,6 +8,7 @@ import { receiptCommand } from './commands/receipt.js'
 import { doctorCommand } from './commands/doctor.js'
 import { localPilotCommand } from './commands/local-pilot.js'
 import { packetCommand } from './commands/packet.js'
+import { abandonCommand } from './commands/abandon.js'
 const [command,...args]=process.argv.slice(2)
-const commands:Record<string,(args:string[])=>Promise<void>>={init:initCommand,ingest:ingestCommand,tick:tickCommand,status:statusCommand,reconcile:reconcileCommand,receipt:receiptCommand,doctor:doctorCommand,'local-pilot':localPilotCommand,packet:packetCommand}
-if(!command||!commands[command]){console.error('usage: loopctl <init|ingest|tick|status|reconcile|receipt|doctor|local-pilot|packet> [options]');process.exitCode=2}else commands[command](args).catch(error=>{console.error(error instanceof Error?error.message:String(error));process.exitCode=1})
+const commands:Record<string,(args:string[])=>Promise<void>>={init:initCommand,ingest:ingestCommand,tick:tickCommand,status:statusCommand,reconcile:reconcileCommand,receipt:receiptCommand,doctor:doctorCommand,'local-pilot':localPilotCommand,packet:packetCommand,abandon:abandonCommand}
+if(!command||!commands[command]){console.error('usage: loopctl <init|ingest|tick|status|reconcile|receipt|doctor|local-pilot|packet|abandon> [options]');process.exitCode=2}else commands[command](args).catch(error=>{console.error(error instanceof Error?error.message:String(error));process.exitCode=1})

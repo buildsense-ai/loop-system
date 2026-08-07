@@ -59,6 +59,9 @@ const runtimeStarted = z.object({ ...base, type: z.literal('runtime_started'), p
 const progress = z.object({ ...base, type: z.literal('runtime_progress_observed'), payload: z.object({ workItemId: id, attemptId: id, reportedState: id }).strict() }).strict()
 const connection = z.object({ ...base, type: z.literal('runtime_connection_observed'), payload: z.object({ workItemId: id, attemptId: id, connectionState: z.enum(['connected','disconnected','unknown']) }).strict() }).strict()
 const taskStatus = z.object({ ...base, type: z.literal('catsco_task_status_observed'), payload: z.object({ workItemId: id, attemptId: id, state: id, runId: id }).strict() }).strict()
+const attemptAbandoned = z.object({ ...base, type: z.literal('attempt_abandoned'), payload: z.object({
+  workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative()
+}).strict() }).strict()
 const candidateSubmitted = z.object({ ...base, type: z.literal('candidate_submitted'), payload: candidatePacketSchema }).strict()
 const orphan = z.object({ ...base, type: z.literal('orphan_deliverable_observed'), payload: z.object({ workItemId: id, repository: id, prNumber: z.number().int().positive(), headSha: id }).strict() }).strict()
 const reconcile = z.object({ ...base, type: z.literal('reconcile_tick'), payload: z.object({ scope: id }).strict() }).strict()
@@ -79,11 +82,15 @@ const deliverableClosed = z.object({ ...base, type: z.literal('deliverable_close
 
 export const ingressEventSchema = z.discriminatedUnion('type', [
   workItemRegistered, workBundleProposed, runtimeStarted, progress, connection,
-  taskStatus, candidateSubmitted, orphan, reconcile, review, deliverableClosed
+  taskStatus, attemptAbandoned, candidateSubmitted, orphan, reconcile, review, deliverableClosed
 ])
 export type IngressEvent = z.infer<typeof ingressEventSchema>
 
 export interface TrustedEvidence { repository: string; prNumber: number; headSha: string; baseSha: string; changedPaths: string[]; digest: string }
+export interface AttemptAbandonedValidatedEvent {
+  type: 'attempt_abandoned'; eventId: string; ingressSequence: number; trustedIngressAt: string;
+  payload: { workItemId: string; expectedRevision: number; attemptId: string; generation: number }
+}
 export interface CandidateValidatedEvent {
   type: 'candidate_validated'; eventId: string; ingressSequence: number; trustedIngressAt: string;
   payload: CandidatePacket; evidence: TrustedEvidence
@@ -96,4 +103,4 @@ export interface DeliverableClosedValidatedEvent {
   type: 'deliverable_closed_validated'; eventId: string; ingressSequence: number; trustedIngressAt: string;
   payload: z.infer<typeof deliverableClosedPayloadSchema>; readbackDigest: string
 }
-export type KernelEvent = IngressEvent | CandidateValidatedEvent | ReviewValidatedEvent | DeliverableClosedValidatedEvent
+export type KernelEvent = Exclude<IngressEvent, { type: 'attempt_abandoned' }> | AttemptAbandonedValidatedEvent | CandidateValidatedEvent | ReviewValidatedEvent | DeliverableClosedValidatedEvent

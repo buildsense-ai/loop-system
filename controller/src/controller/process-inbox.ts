@@ -4,7 +4,7 @@ import type { RuntimeProofAdapter } from '../adapters/runtime.js'
 import type { GitHubReadAdapter } from '../adapters/github.js'
 import type { ReviewerAuthorityAdapter } from '../adapters/reviewer.js'
 import { ReviewerAuthorityUnavailable } from '../adapters/reviewer.js'
-import type { KernelEvent, TrustedEvidence } from '../protocol/events.js'
+import type { IngressEvent, KernelEvent, TrustedEvidence } from '../protocol/events.js'
 import type { TransitionReceipt } from '../protocol/receipts.js'
 import { parseInboxEvent, parseCatscoAttestation } from './ingest.js'
 import { CandidateRejection, validateCandidate } from './candidate-validation.js'
@@ -180,9 +180,16 @@ export async function processInboxRow(
       return rejectInbox(db, ownerUid, String(row.inbox_id), code)
     }
   }
-  let event: KernelEvent = ingress
+  // attempt_abandoned is enriched with the durable inbox timestamp below before it reaches the kernel.
+  let event: KernelEvent = ingress as Exclude<IngressEvent, { type: 'attempt_abandoned' }>
   try {
-    if (ingress.type === 'candidate_submitted') {
+    if (ingress.type === 'attempt_abandoned') {
+      event = {
+        type: 'attempt_abandoned', eventId: ingress.eventId,
+        ingressSequence: Number(row.ingress_sequence), trustedIngressAt: String(row.trusted_ingress_at),
+        payload: ingress.payload
+      }
+    } else if (ingress.type === 'candidate_submitted') {
       if (row.validation_receipt_json) {
         const validation = JSON.parse(String(row.validation_receipt_json)) as { evidence: TrustedEvidence }
         event = {

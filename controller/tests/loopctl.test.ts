@@ -57,6 +57,10 @@ const started = (expectedRevision = 2, generation = 1, attemptId = `attempt-${ge
     workItemId: 'wi-1', expectedRevision, attemptId, generation,
     runtimePrincipal: `catsco-user:${generation}`, signature: 'catsco-message-attested'
   })
+const abandon = (attemptId = 'attempt-1', generation = 1, expectedRevision = 3, key = 'abandon-1') => ({
+  type: 'attempt_abandoned', eventId: `event-${key}`, idempotencyKey: key, source: 'loopctl', entityRef: `attempt:${attemptId}`,
+  payload: { workItemId: 'wi-1', expectedRevision, attemptId, generation }
+})
 
 const deliverableBody = { kind: 'github_pr' as const, repository: 'acme/repo', prNumber: 7, headSha: 'head-123', baseSha: 'base-123' }
 const deliverableDigest = digestJson(deliverableBody)
@@ -109,7 +113,7 @@ async function reachCandidate(db: SqliteDatabase, terminalState: 'accepted' | 'c
 it('durably rejects non-addressable group principals without blocking later inbox rows', async () => {
   const { db } = database()
   const invalidRegistration = registration()
-  invalidRegistration.payload.workerTopicId = 'grp_1400'
+  invalidRegistration.payload.workerTopicId = 'p2p_275_559'
   invalidRegistration.payload.stewardTopicId = 'grp_1400'
   invalidRegistration.payload.stewardPrincipal = 'steward'
   ingest(db, 'owner-a', invalidRegistration, providers)
@@ -234,6 +238,80 @@ describe('Candidate Commit', () => {
       .toEqual({ status: 'rejected', rejection_code: 'candidate_id_conflict' })
     expect(db.prepare("SELECT count(*) count FROM inbox WHERE status='pending'").get()).toEqual({ count: 0 })
     expect(db.prepare("SELECT count(*) count FROM candidates WHERE candidate_id='candidate-1'").get()).toEqual({ count: 1 })
+    db.close()
+  })
+
+  it('abandons an expired running Attempt and fences a higher generation for requeue', async () => {
+    const { db } = database()
+    await reachInProgress(db)
+    ingest(db, 'owner-a', abandon(), { ...providers, now: () => '2026-08-06T00:00:00.000Z', id: prefix => `${prefix}-abandon` })
+    await process(db)
+    let snapshot = loadSnapshot(db, 'owner-a', 'wi-1')
+    expect(snapshot.workItem).toMatchObject({ revision: 4, state: 'ready' })
+    expect(snapshot.attempt).toMatchObject({ attemptId: 'attempt-1', generation: 1, controlState: 'abandoned', reportedState: 'abandoned' })
+    ingest(db, 'owner-a', bundle(4, 2, 'attempt-2', 'bundle-2'), { ...providers, id: prefix => `${prefix}-two` })
+    await process(db)
+    snapshot = loadSnapshot(db, 'owner-a', 'wi-1')
+    expect(snapshot.workItem).toMatchObject({ revision: 5, state: 'assigned' })
+    expect(snapshot.attempt).toMatchObject({ attemptId: 'attempt-2', generation: 2, controlState: 'allocated' })
+    db.close()
+  })
+
+  it.each([
+    ['at lease expiry', abandon('attempt-1', 1, 3, 'abandon-at-expiry'), 'attempt_not_expired', '2026-08-05T00:00:00.000Z'],
+    ['wrong attempt', abandon('other-attempt'), 'attempt_mismatch', now],
+    ['stale generation', abandon('attempt-1', 0), 'stale_generation', now],
+    ['stale revision', abandon('attempt-1', 1, 2), 'stale_work_item_revision', now]
+  ])('rejects Attempt abandonment when %s', async (_name, event, rejectionCode, trustedIngressAt) => {
+    const { db } = database()
+    await reachInProgress(db)
+    ingest(db, 'owner-a', event, { ...providers, now: () => trustedIngressAt, id: prefix => `${prefix}-abandon-${String(_name)}` })
+    const [receipt] = await process(db)
+    expect(receipt).toMatchObject({ status: 'rejected', rejectionCode })
+    expect(loadSnapshot(db, 'owner-a', 'wi-1').workItem).toMatchObject({ revision: 3, state: 'in_progress' })
+    db.close()
+  })
+
+  it('keeps an early rejection idempotent while a new request ID succeeds after expiry', async () => {
+    const { db } = database()
+    await reachInProgress(db)
+    const early = abandon('attempt-1', 1, 3, 'abandon-early')
+    ingest(db, 'owner-a', early, { ...providers, id: prefix => `${prefix}-early-${crypto.randomUUID()}` })
+    const [rejected] = await process(db)
+    expect(rejected).toMatchObject({ status: 'rejected', rejectionCode: 'attempt_not_expired' })
+    expect(ingest(db, 'owner-a', early, { ...providers, now: () => '2026-08-06T00:00:00.000Z' })).toEqual(rejected)
+
+    ingest(db, 'owner-a', abandon('attempt-1', 1, 3, 'abandon-after-expiry'), {
+      ...providers, now: () => '2026-08-06T00:00:00.000Z', id: prefix => `${prefix}-after-expiry-${crypto.randomUUID()}`
+    })
+    const [committed] = await process(db)
+    expect(committed).toMatchObject({ status: 'committed', workItemRevision: 4 })
+    expect(loadSnapshot(db, 'owner-a', 'wi-1').workItem).toMatchObject({ revision: 4, state: 'ready' })
+    db.close()
+  })
+
+  it('fences late Candidate and runtime_started events from an abandoned Attempt', async () => {
+    const { db } = database()
+    await reachInProgress(db)
+    ingest(db, 'owner-a', abandon(), { ...providers, now: () => '2026-08-06T00:00:00.000Z', id: prefix => `${prefix}-abandon` })
+    await process(db)
+    ingest(db, 'owner-a', candidate(), { ...providers, id: prefix => `${prefix}-late-candidate` })
+    ingest(db, 'owner-a', started(4, 1, 'attempt-1', 'late-started'), { ...providers, id: prefix => `${prefix}-late-started` }, {
+      topicId: 'worker-topic', seqId: '2', senderUid: '1', serverReceivedAt: '2026-08-06T00:00:01.000Z'
+    })
+    const receipts = await process(db)
+    expect(receipts.map(receipt => receipt.rejectionCode)).toEqual(['stale_work_item_revision', 'runtime_started_lease_expired'])
+    expect(db.prepare('SELECT count(*) count FROM candidates').get()).toEqual({ count: 0 })
+    expect(db.prepare("SELECT count(*) count FROM actions WHERE kind='review_candidate'").get()).toEqual({ count: 0 })
+    db.close()
+  })
+
+  it('rejects abandonment after a Candidate is committed', async () => {
+    const { db } = database()
+    await reachCandidate(db)
+    ingest(db, 'owner-a', abandon('attempt-1', 1, 4), { ...providers, now: () => '2026-08-06T00:00:00.000Z', id: prefix => `${prefix}-abandon-candidate` })
+    const [receipt] = await process(db)
+    expect(receipt).toMatchObject({ status: 'rejected', rejectionCode: 'candidate_exists' })
     db.close()
   })
 
