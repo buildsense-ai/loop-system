@@ -113,10 +113,9 @@ export class OpenCliCatscoAdapter implements CatscoAdapter {
       'catsco', 'messages', topicId, '--after-seq', String(afterSeq), '--limit', '200'
     ]))
     const envelope = pollSchema.parse(raw)
-    if (envelope.hasMore) {
-      throw new Error('CatsCo bounded-topic poll overflow (hasMore=true); cursor was not advanced')
-    }
-
+    // A bounded page is a durable prefix, not an overflow failure. Reconcile
+    // ingests this page before advancing its cursor; a later cycle continues
+    // from nextCursor until the topic is caught up.
     const nextCursor = cursorNumber(envelope.nextCursor)
     const items = envelope.items.map(item => {
       const seq = cursorNumber(item.seqId)

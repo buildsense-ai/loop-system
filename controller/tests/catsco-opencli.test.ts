@@ -147,6 +147,26 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     ])
   })
 
+  it('advances one bounded page at a time when the topic has more history', async () => {
+    const calls: string[][] = []
+    const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{ data: {
+      items: [{ seqId: '201', topicId: 'topic-1', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }],
+      nextCursor: '201', hasMore: true
+    } }, { data: {
+      items: [{ seqId: '202', topicId: 'topic-1', senderUid: '559', content: JSON.stringify(candidateEvent()), serverReceivedAt: serverTime }],
+      nextCursor: '202', hasMore: false
+    } }], calls))
+
+    const first = await adapter.poll('topic-1', '200')
+    const second = await adapter.poll('topic-1', first.nextCursor)
+    expect(first).toMatchObject({ nextCursor: '201', observations: [] })
+    expect(second.observations.map(item => [item.event.type, item.attestation.seqId])).toEqual([['candidate_submitted', '202']])
+    expect(calls).toEqual([
+      ['catsco', 'messages', 'topic-1', '--after-seq', '200', '--limit', '200', '--format', 'json'],
+      ['catsco', 'messages', 'topic-1', '--after-seq', '201', '--limit', '200', '--format', 'json']
+    ])
+  })
+
   it('skips all noise and disallowed JSON control events while advancing the envelope cursor', async () => {
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{ items: [
       { seqId: '21', topicId: 'topic-1', senderUid: '559', content: 'not json', serverReceivedAt: serverTime },
@@ -492,7 +512,7 @@ describe('CatsCo reconciliation cursor safety', () => {
     database.close()
   })
 
-  it('does not advance an existing cursor when the bounded poll overflows', async () => {
+  it('advances an existing cursor to the durable end of a bounded page', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
     await processPending(database, 'owner-a', processingAdapters)
@@ -500,11 +520,12 @@ describe('CatsCo reconciliation cursor safety', () => {
       VALUES('owner-a','catsco','worker-topic','"10"',?)`).run(now)
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([
       { uid: 'owner-a' },
-      { items: [], nextCursor: '10', hasMore: true }
+      { items: [{ seqId: '11', topicId: 'worker-topic', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }], nextCursor: '11', hasMore: true },
+      { items: [], nextCursor: '0', hasMore: false }
     ], []))
-    await expect(reconcile(database, 'owner-a', adapter, providers)).rejects.toThrow('hasMore=true')
+    await expect(reconcile(database, 'owner-a', adapter, providers)).resolves.toMatchObject({ status: 'enqueued', observations: 0 })
     expect(database.prepare("SELECT cursor_json FROM source_cursors WHERE scope_key='worker-topic'").get())
-      .toEqual({ cursor_json: '"10"' })
+      .toEqual({ cursor_json: '"11"' })
     database.close()
   })
 })
