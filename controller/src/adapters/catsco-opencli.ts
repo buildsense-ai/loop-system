@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { runProcess, type ProcessResult } from '../lib/process.js'
+import { ProcessFailure, runProcess, type ProcessResult } from '../lib/process.js'
 import { ingressEventSchema } from '../protocol/events.js'
 import type { CatscoAdapter, CatscoMessageReceipt, CatscoPollResult, CatscoSendRequest } from './catsco.js'
 
@@ -66,8 +66,16 @@ export class OpenCliCatscoAdapter implements CatscoAdapter {
   constructor(private readonly command = 'opencli', private readonly runner: Runner = runProcess) {}
 
   private async json(args: string[]): Promise<unknown> {
-    const result = await this.runner(this.command, [...args, '--format', 'json'])
-    return JSON.parse(result.stdout)
+    try {
+      const result = await this.runner(this.command, [...args, '--format', 'json'])
+      return JSON.parse(result.stdout)
+    } catch (error) {
+      if (error instanceof ProcessFailure && error.result?.stderr?.trim()) {
+        const stderr = error.result.stderr.trim().slice(0, 4_000)
+        throw new Error(`${error.message}: ${stderr}`, { cause: error })
+      }
+      throw error
+    }
   }
 
   async me() {

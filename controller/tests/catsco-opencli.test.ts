@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { OpenCliCatscoAdapter } from '../src/adapters/catsco-opencli.js'
 import type { CatscoAdapter, CatscoMessageReceipt } from '../src/adapters/catsco.js'
-import type { ProcessResult } from '../src/lib/process.js'
+import { ProcessFailure, type ProcessResult } from '../src/lib/process.js'
 import { wakeAgentPostcondition, type WakeAgentEffect } from '../src/protocol/effects.js'
 import { openDatabase, type SqliteDatabase } from '../src/store/sqlite.js'
 import { initializeOwner, migrate } from '../src/store/migrate.js'
@@ -110,6 +110,13 @@ describe('OpenCLI CatsCo P0 adapter', () => {
       ['catsco', 'send', 'topic-1', '{"exact":true}', '--client-message-id', 'client-1', '--format', 'json'],
       ['catsco', 'message-receipt', 'topic-1', '--client-message-id', 'client-1', '--format', 'json']
     ])
+  })
+
+  it('preserves bounded OpenCLI stderr when a command fails', async () => {
+    const adapter = new OpenCliCatscoAdapter('opencli-test', async () => {
+      throw new ProcessFailure('opencli exited 1', { stderr: 'authentication expired' })
+    })
+    await expect(adapter.me()).rejects.toThrow('opencli exited 1: authentication expired')
   })
 
   it('passes a canonical structured mention when sending to a group', async () => {
