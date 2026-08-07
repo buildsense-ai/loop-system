@@ -30,6 +30,12 @@ export async function doctorCommand(args: string[]) {
     catscoSendDetail: 'idempotent existing-topic send; reconciliation uses this machine local registry plus server seq confirmation',
     catscoPollingDetail: 'limit 200; bounded topics and a single controller host only; overflow fails closed',
     githubRead, githubDetail, configuredOwnerUid: configured.ownerUid, ownerUid: config.ownerUid, automaticTaskCreation: 'blocked',
-    runtimeWrapper: 'unavailable', reviewerBridge: 'unavailable', artifactWrite: 'unavailable'
+    runtimeWrapper: 'not_controller_managed',
+    reviewerBridge: 'not_controller_managed',
+    artifactWrite: 'not_controller_managed',
+    runtimeWrapperDetail: 'Controller dispatches existing CatsCo Topics; Worker Runtime owns session creation and execution.',
+    reviewerBridgeDetail: 'Review User receives existing CatsCo messages directly; Controller only sends durable Action packets.',
+    artifactWriteDetail: 'Candidate/PR evidence is written by the Worker and verified through GitHub readback; Controller does not write CatsCo Artifacts.',
+    dispatchReadiness: catscoRead === 'available' ? 'ready_for_existing_catsco_runtime' : 'blocked_by_catsco_auth'
   })
 }

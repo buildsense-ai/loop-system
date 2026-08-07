@@ -66,8 +66,8 @@ export const capabilities = {
   catsco_existing_topic_send: 'available-idempotent',
   catsco_receipt_reconciliation: 'single-machine-local-registry-plus-server-seq-confirmation',
   automatic_task_creation: 'blocked',
-  runtime_wrapper: 'unavailable',
-  reviewer_authority: 'unavailable',
-  artifact_write: 'unavailable',
-  parallel_attempts: 'unavailable'
+  runtime_wrapper: 'not_controller_managed',
+  reviewer_authority: 'not_controller_managed',
+  artifact_write: 'not_controller_managed',
+  parallel_attempts: 'available_via_dedicated_agent_task_topics'
 } as const
