@@ -3,6 +3,9 @@ import type { CatscoAdapter, CatscoMessageAttestation } from '../adapters/catsco
 import { defaultProviders, ingest, type Providers } from './ingest.js'
 import { canonicalize } from '../lib/canonical-json.js'
 import { ingressEventSchema, type IngressEvent } from '../protocol/events.js'
+import type { TransitionReceipt } from '../protocol/receipts.js'
+import { tick } from './tick.js'
+import type { ProcessingAdapters } from './process-inbox.js'
 
 export async function reconcile(
   db: SqliteDatabase,
@@ -10,11 +13,21 @@ export async function reconcile(
   adapter: CatscoAdapter,
   providers?: Providers,
   workItemId?: string,
-  options: { runtimeStartTimeoutMs?: number; topicScope?: 'all' | 'worker' } = {}
+  options: {
+    runtimeStartTimeoutMs?: number
+    topicScope?: 'all' | 'worker'
+    mode?: 'enqueue-only' | 'drive'
+    processingAdapters?: ProcessingAdapters
+    maxEvents?: number
+    maxEffects?: number
+  } = {}
 ) {
   const effectiveProviders = providers ?? defaultProviders
+  const mode = options.mode ?? 'enqueue-only'
+  if (mode === 'drive' && !options.processingAdapters) throw new Error('drive reconciliation requires processing adapters')
   if (!adapter.poll) {
-    return { status: 'unavailable', reason: 'CatsCo polling is not implemented by this adapter; no cursor advanced', observations: 0 }
+    return { status: 'unavailable', mode, reason: 'CatsCo polling is not implemented by this adapter; no cursor advanced',
+      observations: 0, enqueued: 0, ingested: [], cursors: [], bridgeUnavailable: 0 }
   }
   const identity = await adapter.me()
   if (identity.uid !== ownerUid) {
@@ -27,7 +40,7 @@ export async function reconcile(
   const topics = [...new Set(items.flatMap(item => options.topicScope === 'worker'
     ? [item.worker_topic_id]
     : [item.worker_topic_id, item.steward_topic_id]))]
-  const polled: { topicId: string; observations: { event: IngressEvent; attestation: CatscoMessageAttestation }[]; nextCursor: unknown }[] = []
+  const polled: { topicId: string; cursor: unknown; observations: { event: IngressEvent; attestation: CatscoMessageAttestation }[]; nextCursor: unknown }[] = []
   for (const topicId of topics) {
     const cursorRow = db.prepare(
       `SELECT cursor_json FROM source_cursors WHERE owner_uid=? AND source='catsco' AND scope_key=?`
@@ -47,13 +60,14 @@ export async function reconcile(
       if (!event.success || (event.data.type !== 'candidate_submitted' && event.data.type !== 'review_decided' && event.data.type !== 'runtime_started')) continue
       observations.push({ event: event.data, attestation })
     }
-    polled.push({ topicId, observations, nextCursor: result.nextCursor })
+    polled.push({ topicId, cursor, observations, nextCursor: result.nextCursor })
   }
 
   let observations = 0
+  const ingested: TransitionReceipt[] = []
   for (const batch of polled) {
     for (const observation of batch.observations) {
-      ingest(db, ownerUid, observation.event, effectiveProviders, observation.attestation)
+      ingested.push(ingest(db, ownerUid, observation.event, effectiveProviders, observation.attestation))
       observations++
     }
   }
@@ -97,5 +111,20 @@ export async function reconcile(
     }, effectiveProviders)
     if (receipt.status === 'pending' || receipt.status === 'committed') bridgeUnavailable++
   }
-  return { status: 'enqueued', observations, bridgeUnavailable }
+  const cursors = polled.map(batch => ({
+    topicId: batch.topicId,
+    previousCursor: batch.cursor == null ? null : String(batch.cursor),
+    nextCursor: String(batch.nextCursor),
+    observations: batch.observations.length
+  }))
+  if (mode === 'enqueue-only') {
+    return { status: 'enqueued', mode, observations, enqueued: ingested.filter(receipt => receipt.status === 'pending').length,
+      ingested, cursors, bridgeUnavailable }
+  }
+  const driven = await tick(db, ownerUid, { ...options.processingAdapters!, catsco: adapter }, {
+    ...(options.maxEvents === undefined ? {} : { maxEvents: options.maxEvents }),
+    ...(options.maxEffects === undefined ? {} : { maxEffects: options.maxEffects })
+  })
+  return { status: 'driven', mode, observations, enqueued: ingested.filter(receipt => receipt.status === 'pending').length,
+    ingested, cursors, bridgeUnavailable, ...driven }
 }

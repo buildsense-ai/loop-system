@@ -25,6 +25,7 @@ const pollItemSchema = z.object({
   serverReceivedAt: z.string().min(1)
 }).passthrough()
 const pollSchema = z.object({
+  cursorVersion: z.literal('after-seq-v1'),
   items: z.array(pollItemSchema),
   nextCursor: z.union([z.string(), z.number()]),
   hasMore: z.boolean()

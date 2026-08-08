@@ -13,7 +13,7 @@ import { processPending } from '../src/controller/process-inbox.js'
 import { runOutbox } from '../src/controller/outbox.js'
 import { reconcile } from '../src/controller/reconcile.js'
 import { canonicalize } from '../src/lib/canonical-json.js'
-import { sha256 } from '../src/lib/digest.js'
+import { digestJson, sha256 } from '../src/lib/digest.js'
 
 const dirs: string[] = []
 const now = '2026-08-04T00:00:00.000Z'
@@ -56,6 +56,14 @@ function candidateEvent(key = 'candidate-polled') {
     runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', candidateId: `candidate-${key}`,
     deliverable: { kind: 'github_pr', repository: 'acme/repo', prNumber: 7, headSha: 'head-123', baseSha: 'base-123', digest: 'deliverable-digest' },
     ...hashes
+  })
+}
+function validCandidateEvent(key = 'candidate-driven') {
+  const deliverable = { kind: 'github_pr' as const, repository: 'acme/repo', prNumber: 7, headSha: 'head-123', baseSha: 'base-123' }
+  return event('candidate_submitted', key, {
+    ownerUid: 'owner-a', workItemId: 'wi-1', workItemRevision: 3, attemptId: 'attempt-1', generation: 1,
+    runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', candidateId: `candidate-${key}`,
+    deliverable: { ...deliverable, digest: digestJson(deliverable) }, ...hashes
   })
 }
 function reviewEvent(key = 'review-polled') {
@@ -134,6 +142,13 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     ])
   })
 
+  it('fails closed unless the OpenCLI response declares the continuous after-seq cursor contract', async () => {
+    const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{
+      items: [], nextCursor: '10', hasMore: false
+    }], []))
+    await expect(adapter.poll('topic-1', '10')).rejects.toThrow(/cursorVersion/)
+  })
+
   it('skips plain text before valid Candidate/review and returns the verified envelope cursor', async () => {
     const calls: string[][] = []
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{ data: {
@@ -141,7 +156,7 @@ describe('OpenCLI CatsCo P0 adapter', () => {
         { seqId: '13', topicId: 'topic-1', senderUid: '574', content: JSON.stringify(reviewEvent()), serverReceivedAt: '2026-08-04T00:13:00.000Z' },
         { seqId: '11', topicId: 'topic-1', senderUid: '574', content: 'ordinary chat', serverReceivedAt: '2026-08-04T00:11:00.000Z' },
         { seqId: '12', topicId: 'topic-1', senderUid: '559', content: JSON.stringify(candidateEvent()), serverReceivedAt: '2026-08-04T00:12:00.000Z' }
-      ], nextCursor: '13', hasMore: false
+      ], cursorVersion: 'after-seq-v1', nextCursor: '13', hasMore: false
     } }], calls))
 
     const result = await adapter.poll('topic-1', '10')
@@ -158,10 +173,10 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     const calls: string[][] = []
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{ data: {
       items: [{ seqId: '201', topicId: 'topic-1', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }],
-      nextCursor: '201', hasMore: true
+      cursorVersion: 'after-seq-v1', nextCursor: '201', hasMore: true
     } }, { data: {
       items: [{ seqId: '202', topicId: 'topic-1', senderUid: '559', content: JSON.stringify(candidateEvent()), serverReceivedAt: serverTime }],
-      nextCursor: '202', hasMore: false
+      cursorVersion: 'after-seq-v1', nextCursor: '202', hasMore: false
     } }], calls))
 
     const first = await adapter.poll('topic-1', '200')
@@ -183,7 +198,7 @@ describe('OpenCLI CatsCo P0 adapter', () => {
         workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
         runtimePrincipal: 'catsco-user:559', signature: 'not-authority'
       })), serverReceivedAt: serverTime }
-    ], nextCursor: '24', hasMore: false }], []))
+    ], cursorVersion: 'after-seq-v1', nextCursor: '24', hasMore: false }], []))
 
     await expect(adapter.poll('topic-1', '20')).resolves.toMatchObject({ nextCursor: '24', observations: [{ event: { type: 'runtime_started' }, attestation: { senderUid: '559', topicId: 'topic-1' } }] })
   })
@@ -192,7 +207,7 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{ items: [{
       seqId: '1', topicId: 'other-topic', senderUid: '574', content: JSON.stringify(event('reconcile_tick', 'wrong-topic', { scope: 'wi-1' })),
       serverReceivedAt: serverTime
-    }], nextCursor: '1', hasMore: false }], []))
+    }], cursorVersion: 'after-seq-v1', nextCursor: '1', hasMore: false }], []))
     await expect(adapter.poll('topic-1', '0')).rejects.toThrow('while polling topic-1')
   })
 })
@@ -337,6 +352,63 @@ describe('content-addressed outbox sends', () => {
 })
 
 describe('CatsCo reconciliation cursor safety', () => {
+  async function reachInProgress(database: SqliteDatabase) {
+    ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle('catsco-user:559'), providers)
+    await processPending(database, 'owner-a', processingAdapters)
+    ingest(database, 'owner-a', event('runtime_started', 'started-driven', {
+      workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
+      runtimePrincipal: 'catsco-user:559', signature: 'catsco-message-attested'
+    }), providers, { topicId: 'worker-topic', seqId: '1', senderUid: '559', serverReceivedAt: serverTime })
+    await processPending(database, 'owner-a', processingAdapters)
+  }
+
+  it('drives a polled Candidate through inbox processing and the review outbox effect', async () => {
+    const database = db()
+    await reachInProgress(database)
+    const candidate = validCandidateEvent()
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      findMessage: async () => null,
+      sendExistingTopic: async request => ({ messageId: `sent-${request.clientMsgId}`, clientMsgId: request.clientMsgId,
+        duplicate: false, contentDigest: sha256(request.content), serverConfirmed: true }),
+      poll: async (topicId, cursor) => topicId === 'worker-topic'
+        ? { observations: [{ event: candidate, attestation: { topicId, seqId: '9', senderUid: '559', serverReceivedAt: serverTime } }], nextCursor: '9' }
+        : { observations: [], nextCursor: cursor ?? '0' }
+    }
+    const result = await reconcile(database, 'owner-a', adapter, providers, undefined, {
+      mode: 'drive', processingAdapters: {
+        runtime: { verify: async () => undefined },
+        github: { readPullRequest: async () => ({ repository: 'acme/repo', prNumber: 7, headSha: 'head-123', baseSha: 'base-123', changedPaths: ['src/provider.ts'] }) },
+        reviewer: processingAdapters.reviewer
+      }
+    })
+    expect(result).toMatchObject({ status: 'driven', mode: 'drive', observations: 1, enqueued: 1, processed: 1, effects: { satisfied: 1 } })
+    expect(result.cursors).toEqual(expect.arrayContaining([{ topicId: 'worker-topic', previousCursor: null, nextCursor: '9', observations: 1 }]))
+    expect(database.prepare("SELECT state FROM actions WHERE kind='review_candidate'").get()).toEqual({ state: 'satisfied' })
+    expect(database.prepare("SELECT status FROM inbox WHERE event_id=?").get(candidate.eventId)).toEqual({ status: 'committed' })
+    database.close()
+  })
+
+  it('keeps a polled Candidate pending under enqueue-only without creating a review action', async () => {
+    const database = db()
+    await reachInProgress(database)
+    const candidate = validCandidateEvent('candidate-enqueue-only')
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      findMessage: async () => null,
+      sendExistingTopic: async () => { throw new Error('outbox must not run') },
+      poll: async (topicId, cursor) => topicId === 'worker-topic'
+        ? { observations: [{ event: candidate, attestation: { topicId, seqId: '9', senderUid: '559', serverReceivedAt: serverTime } }], nextCursor: '9' }
+        : { observations: [], nextCursor: cursor ?? '0' }
+    }
+    const result = await reconcile(database, 'owner-a', adapter, providers, undefined, { mode: 'enqueue-only' })
+    expect(result).toMatchObject({ status: 'enqueued', mode: 'enqueue-only', observations: 1, enqueued: 1 })
+    expect(database.prepare("SELECT status FROM inbox WHERE event_id=?").get(candidate.eventId)).toEqual({ status: 'pending' })
+    expect(database.prepare("SELECT count(*) count FROM actions WHERE kind='review_candidate'").get()).toEqual({ count: 0 })
+    database.close()
+  })
+
   it('uses serverReceivedAt as trusted ingress and advances only after ingest', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
@@ -515,7 +587,7 @@ describe('CatsCo reconciliation cursor safety', () => {
         attestation: { topicId, seqId: '17', senderUid: '559', serverReceivedAt: serverTime }
       }], nextCursor: '17' } : { observations: [], nextCursor: cursor ?? '0' }
     }
-    await expect(reconcile(database, 'owner-a', adapter, { now: () => now, id: () => existingInbox.inbox_id }))
+    await expect(reconcile(database, 'owner-a', adapter, { now: () => now, id: () => existingInbox.inbox_id }, undefined, { mode: 'enqueue-only' }))
       .rejects.toThrow('UNIQUE constraint failed')
     expect(database.prepare('SELECT count(*) count FROM source_cursors').get()).toEqual({ count: 0 })
     database.close()
@@ -553,8 +625,8 @@ describe('CatsCo reconciliation cursor safety', () => {
       VALUES('owner-a','catsco','worker-topic','"10"',?)`).run(now)
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([
       { uid: 'owner-a' },
-      { items: [{ seqId: '11', topicId: 'worker-topic', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }], nextCursor: '11', hasMore: true },
-      { items: [], nextCursor: '0', hasMore: false }
+      { cursorVersion: 'after-seq-v1', items: [{ seqId: '11', topicId: 'worker-topic', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }], nextCursor: '11', hasMore: true },
+      { cursorVersion: 'after-seq-v1', items: [], nextCursor: '0', hasMore: false }
     ], []))
     await expect(reconcile(database, 'owner-a', adapter, providers)).resolves.toMatchObject({ status: 'enqueued', observations: 0 })
     expect(database.prepare("SELECT cursor_json FROM source_cursors WHERE scope_key='worker-topic'").get())

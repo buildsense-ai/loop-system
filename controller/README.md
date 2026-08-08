@@ -109,11 +109,14 @@ node dist/cli.js ingest --file signed-candidate.json
 node dist/cli.js tick --no-effects
 node dist/cli.js status --include-outbox --json
 node dist/cli.js receipt candidate:wi-1:a1 --json
+# Default and --enqueue-only poll/ingest only; no inbox processing or wakes.
 node dist/cli.js reconcile --enqueue-only
+# --drive serially polls/ingests/cursor-advances, processes pending inbox rows, then runs outbox effects.
+node dist/cli.js reconcile --drive
 node dist/cli.js doctor --json
 ```
 
-Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. P2P topics are the default; an explicitly selected group Steward topic must already exist and be verified by the human/Review workflow. The deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
+Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. `reconcile` defaults to explicit enqueue-only semantics for compatibility; use unscoped `reconcile --drive` when the Controller must advance received Candidates through validation, Action creation, and idempotent outbox wakes in one serial control-plane cycle. `--drive` and `--enqueue-only` are mutually exclusive; `--drive` rejects `--work-item` and `--worker-only` until inbox and outbox processing have equivalent scopes. P2P topics are the default; an explicitly selected group Steward topic must already exist and be verified by the human/Review workflow. The deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
 
 ### Event examples
 
