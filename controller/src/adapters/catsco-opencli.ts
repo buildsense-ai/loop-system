@@ -25,7 +25,6 @@ const pollItemSchema = z.object({
   serverReceivedAt: z.string().min(1)
 }).passthrough()
 const pollSchema = z.object({
-  cursorVersion: z.literal('after-seq-v1'),
   items: z.array(pollItemSchema),
   nextCursor: z.union([z.string(), z.number()]),
   hasMore: z.boolean()
@@ -122,9 +121,13 @@ export class OpenCliCatscoAdapter implements CatscoAdapter {
       'catsco', 'messages', topicId, '--after-seq', String(afterSeq), '--limit', '200'
     ]))
     const envelope = pollSchema.parse(raw)
-    // A bounded page is a durable prefix, not an overflow failure. Reconcile
-    // ingests this page before advancing its cursor; a later cycle continues
-    // from nextCursor until the topic is caught up.
+    // Legacy CatsCo/OpenCLI cursor mode is implemented as a latest-N window
+    // filtered client-side. `hasMore` therefore cannot prove this page is the
+    // contiguous prefix after the persisted cursor. Fail closed rather than
+    // advancing past potentially skipped Candidate or Review events.
+    if (envelope.hasMore) {
+      throw new Error('CatsCo bounded-topic poll overflow (hasMore=true); cursor was not advanced')
+    }
     const nextCursor = cursorNumber(envelope.nextCursor)
     const items = envelope.items.map(item => {
       const seq = cursorNumber(item.seqId)

@@ -142,11 +142,11 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     ])
   })
 
-  it('fails closed unless the OpenCLI response declares the continuous after-seq cursor contract', async () => {
+  it('fails closed when the legacy latest-window cursor reports more history', async () => {
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{
-      items: [], nextCursor: '10', hasMore: false
+      items: [], nextCursor: '10', hasMore: true
     }], []))
-    await expect(adapter.poll('topic-1', '10')).rejects.toThrow(/cursorVersion/)
+    await expect(adapter.poll('topic-1', '10')).rejects.toThrow('hasMore=true')
   })
 
   it('skips plain text before valid Candidate/review and returns the verified envelope cursor', async () => {
@@ -169,23 +169,16 @@ describe('OpenCLI CatsCo P0 adapter', () => {
     ])
   })
 
-  it('advances one bounded page at a time when the topic has more history', async () => {
+  it('does not treat a full legacy latest window as a contiguous page', async () => {
     const calls: string[][] = []
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([{ data: {
       items: [{ seqId: '201', topicId: 'topic-1', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }],
-      cursorVersion: 'after-seq-v1', nextCursor: '201', hasMore: true
-    } }, { data: {
-      items: [{ seqId: '202', topicId: 'topic-1', senderUid: '559', content: JSON.stringify(candidateEvent()), serverReceivedAt: serverTime }],
-      cursorVersion: 'after-seq-v1', nextCursor: '202', hasMore: false
+      nextCursor: '201', hasMore: true
     } }], calls))
 
-    const first = await adapter.poll('topic-1', '200')
-    const second = await adapter.poll('topic-1', first.nextCursor)
-    expect(first).toMatchObject({ nextCursor: '201', observations: [] })
-    expect(second.observations.map(item => [item.event.type, item.attestation.seqId])).toEqual([['candidate_submitted', '202']])
+    await expect(adapter.poll('topic-1', '200')).rejects.toThrow('hasMore=true')
     expect(calls).toEqual([
-      ['catsco', 'messages', 'topic-1', '--after-seq', '200', '--limit', '200', '--format', 'json'],
-      ['catsco', 'messages', 'topic-1', '--after-seq', '201', '--limit', '200', '--format', 'json']
+      ['catsco', 'messages', 'topic-1', '--after-seq', '200', '--limit', '200', '--format', 'json']
     ])
   })
 
@@ -617,7 +610,7 @@ describe('CatsCo reconciliation cursor safety', () => {
     database.close()
   })
 
-  it('advances an existing cursor to the durable end of a bounded page', async () => {
+  it('does not advance an existing cursor when the legacy window overflows', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
     await processPending(database, 'owner-a', processingAdapters)
@@ -625,12 +618,11 @@ describe('CatsCo reconciliation cursor safety', () => {
       VALUES('owner-a','catsco','worker-topic','"10"',?)`).run(now)
     const adapter = new OpenCliCatscoAdapter('opencli-test', queuedRunner([
       { uid: 'owner-a' },
-      { cursorVersion: 'after-seq-v1', items: [{ seqId: '11', topicId: 'worker-topic', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }], nextCursor: '11', hasMore: true },
-      { cursorVersion: 'after-seq-v1', items: [], nextCursor: '0', hasMore: false }
+      { items: [{ seqId: '11', topicId: 'worker-topic', senderUid: '559', content: 'ordinary chat', serverReceivedAt: serverTime }], nextCursor: '11', hasMore: true }
     ], []))
-    await expect(reconcile(database, 'owner-a', adapter, providers)).resolves.toMatchObject({ status: 'enqueued', observations: 0 })
+    await expect(reconcile(database, 'owner-a', adapter, providers)).rejects.toThrow('hasMore=true')
     expect(database.prepare("SELECT cursor_json FROM source_cursors WHERE scope_key='worker-topic'").get())
-      .toEqual({ cursor_json: '"11"' })
+      .toEqual({ cursor_json: '"10"' })
     database.close()
   })
 })
