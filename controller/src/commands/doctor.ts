@@ -1,10 +1,13 @@
 import { parseArgs } from 'node:util'
-import { loadConfig } from '../config.js'
+import { databasePath, loadConfig, requiredStateRoot } from '../config.js'
 import { runProcess } from '../lib/process.js'
 import { currentConfig, output } from './common.js'
 
 export async function doctorCommand(args: string[]) {
-  parseArgs({ args, options: { json: { type: 'boolean' } }, strict: true })
+  const { values } = parseArgs({ args, options: { json: { type: 'boolean' }, 'require-state-root': { type: 'boolean' } }, strict: true })
+  if (values['require-state-root'] && !requiredStateRoot()) {
+    throw new Error('LOOPCTL_REQUIRED_STATE_ROOT must be set for production doctor')
+  }
   const configured = await loadConfig()
   let config = configured
   let catscoRead = 'unavailable'
@@ -29,7 +32,10 @@ export async function doctorCommand(args: string[]) {
     catscoRead, catscoExistingTopicSend: catscoRead, catscoBoundedPolling: catscoRead, catscoDetail,
     catscoSendDetail: 'idempotent existing-topic send; reconciliation uses this machine local registry plus server seq confirmation',
     catscoPollingDetail: 'limit 200; bounded topics and a single controller host only; overflow fails closed',
-    githubRead, githubDetail, configuredOwnerUid: configured.ownerUid, ownerUid: config.ownerUid, automaticTaskCreation: 'blocked',
+    githubRead, githubDetail, configuredOwnerUid: configured.ownerUid, ownerUid: config.ownerUid,
+    stateRoot: config.stateRoot, databasePath: databasePath(config), requiredStateRoot: requiredStateRoot(),
+    stateRootPolicy: requiredStateRoot() ? 'enforced' : 'development-unpinned',
+    automaticTaskCreation: 'blocked',
     runtimeWrapper: 'not_controller_managed',
     reviewerBridge: 'not_controller_managed',
     artifactWrite: 'not_controller_managed',

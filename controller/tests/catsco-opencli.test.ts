@@ -210,14 +210,22 @@ describe('content-addressed outbox sends', () => {
     sends = 0
     sentIds: string[] = []
     sentMentions: Array<string | undefined> = []
+    private reads = 0
+    private readonly confirmed = new Map<string, CatscoMessageReceipt>()
     constructor(readonly found: CatscoMessageReceipt | null) {}
     async me() { return { uid: 'owner-a' } }
-    async findMessage() { return this.found }
+    async findMessage(_topicId: string, clientMsgId: string) {
+      if (this.found && this.reads++ === 0) return this.found
+      return this.confirmed.get(clientMsgId) ?? null
+    }
     async sendExistingTopic(request: { content: string; clientMsgId: string; mention?: string }) {
       this.sends++
       this.sentIds.push(request.clientMsgId)
       this.sentMentions.push(request.mention)
-      return { messageId: 'sent-1', clientMsgId: request.clientMsgId, duplicate: false, contentDigest: sha256(request.content) }
+      const receipt = { messageId: 'sent-1', clientMsgId: request.clientMsgId, duplicate: false,
+        contentDigest: sha256(request.content), serverConfirmed: true, serverReceivedAt: serverTime }
+      this.confirmed.set(request.clientMsgId, receipt)
+      return receipt
     }
   }
 
@@ -318,6 +326,10 @@ describe('content-addressed outbox sends', () => {
     // Give the current writer its additive columns while deliberately leaving transport v3 unapplied.
     database.exec(readFileSync(new URL('../migrations/004_catsco_attestation_authority.sql', import.meta.url), 'utf8'))
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)').run(now)
+    // The fixture must carry the latest work_items shape before it creates a
+    // legacy transport row; migration 005 is otherwise unrelated to this test.
+    database.exec(readFileSync(new URL('../migrations/005_evidence_lanes_and_recovery.sql', import.meta.url), 'utf8'))
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)').run(now)
     initializeOwner(database, 'owner-a', now)
     await withOutbox(database)
 
@@ -360,11 +372,16 @@ describe('CatsCo reconciliation cursor safety', () => {
     const database = db()
     await reachInProgress(database)
     const candidate = validCandidateEvent()
+    const sentReceipts = new Map<string, CatscoMessageReceipt>()
     const adapter: CatscoAdapter = {
       me: async () => ({ uid: 'owner-a' }),
-      findMessage: async () => null,
-      sendExistingTopic: async request => ({ messageId: `sent-${request.clientMsgId}`, clientMsgId: request.clientMsgId,
-        duplicate: false, contentDigest: sha256(request.content), serverConfirmed: true }),
+      findMessage: async (_topicId, clientMsgId) => sentReceipts.get(clientMsgId) ?? null,
+      sendExistingTopic: async request => {
+        const receipt = { messageId: `sent-${request.clientMsgId}`, clientMsgId: request.clientMsgId,
+          duplicate: false, contentDigest: sha256(request.content), serverConfirmed: true, serverReceivedAt: serverTime }
+        sentReceipts.set(request.clientMsgId, receipt)
+        return receipt
+      },
       poll: async (topicId, cursor) => topicId === 'worker-topic'
         ? { observations: [{ event: candidate, attestation: { topicId, seqId: '9', senderUid: '559', serverReceivedAt: serverTime } }], nextCursor: '9' }
         : { observations: [], nextCursor: cursor ?? '0' }
@@ -405,6 +422,7 @@ describe('CatsCo reconciliation cursor safety', () => {
   it('uses serverReceivedAt as trusted ingress and advances only after ingest', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
     await processPending(database, 'owner-a', processingAdapters)
     const observed = candidateEvent('candidate-cursor')
     const adapter: CatscoAdapter = {
@@ -426,6 +444,7 @@ describe('CatsCo reconciliation cursor safety', () => {
   it('advances a durable topic cursor for an all-noise batch with zero Loop observations', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
     await processPending(database, 'owner-a', processingAdapters)
     const adapter: CatscoAdapter = {
       me: async () => ({ uid: 'owner-a' }),
@@ -444,6 +463,7 @@ describe('CatsCo reconciliation cursor safety', () => {
   it('skips an attested worker-topic work_item_registered without creating state', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
     await processPending(database, 'owner-a', processingAdapters)
     const malicious = registration()
     malicious.eventId = 'event-polled-register'
@@ -491,29 +511,119 @@ describe('CatsCo reconciliation cursor safety', () => {
     database.close()
   })
 
-  it('polls unique active worker and steward topics once after one identity check', async () => {
+  it('does not poll idle ready Work Item topics', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
-    const second = registration()
-    second.eventId = 'event-register-2'
-    second.idempotencyKey = 'register-2'
-    second.payload.workItemId = 'wi-2'
-    second.entityRef = 'work_item:wi-2'
-    second.payload.workerTopicId = 'steward-topic'
-    second.payload.stewardTopicId = 'shared-topic'
-    ingest(database, 'owner-a', second, { ...providers, id: prefix => `${prefix}-2` })
-    await processPending(database, 'owner-a', processingAdapters)
-    let meCalls = 0
     const polls: string[] = []
     const adapter: CatscoAdapter = {
-      me: async () => { meCalls++; return { uid: 'owner-a' } },
+      me: async () => ({ uid: 'owner-a' }),
       findMessage: async () => null,
       sendExistingTopic: async () => { throw new Error('not used') },
       poll: async (topicId, cursor) => { polls.push(topicId); return { observations: [], nextCursor: cursor ?? '0' } }
     }
     await reconcile(database, 'owner-a', adapter, providers)
-    expect(meCalls).toBe(1)
-    expect(polls).toEqual(['worker-topic', 'steward-topic', 'shared-topic'])
+    expect(polls).toEqual([])
+    database.close()
+  })
+
+  it('polls worker and steward topics for an assigned Work Item to advance both cursors', async () => {
+    const database = db()
+    ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
+    await processPending(database, 'owner-a', processingAdapters)
+    const polls: string[] = []
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      findMessage: async () => null,
+      sendExistingTopic: async () => { throw new Error('not used') },
+      poll: async (topicId, cursor) => { polls.push(topicId); return { observations: [], nextCursor: cursor ?? '0' } }
+    }
+    await reconcile(database, 'owner-a', adapter, providers)
+    expect(polls).toEqual(['worker-topic', 'steward-topic'])
+    database.close()
+  })
+
+  it('polls worker and steward topics while an Attempt is in progress', async () => {
+    const database = db()
+    await reachInProgress(database)
+    const polls: string[] = []
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      findMessage: async () => null,
+      sendExistingTopic: async () => { throw new Error('not used') },
+      poll: async (topicId, cursor) => { polls.push(topicId); return { observations: [], nextCursor: cursor ?? '0' } }
+    }
+    await reconcile(database, 'owner-a', adapter, providers)
+    expect(polls).toEqual(['worker-topic', 'steward-topic'])
+    database.close()
+  })
+
+  it('polls worker and steward topics once a Candidate is committed', async () => {
+    const database = db()
+    await reachInProgress(database)
+    const candidate = validCandidateEvent('candidate-steward-route')
+    ingest(database, 'owner-a', candidate, providers, {
+      topicId: 'worker-topic', seqId: '10', senderUid: '559', serverReceivedAt: serverTime
+    })
+    await processPending(database, 'owner-a', {
+      runtime: { verify: async () => undefined },
+      github: { readPullRequest: async () => ({ repository: 'acme/repo', prNumber: 7, headSha: 'head-123', baseSha: 'base-123', changedPaths: ['src/provider.ts'] }) },
+      reviewer: processingAdapters.reviewer
+    })
+    const polls: string[] = []
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      findMessage: async () => null,
+      sendExistingTopic: async () => { throw new Error('not used') },
+      poll: async (topicId, cursor) => { polls.push(topicId); return { observations: [], nextCursor: cursor ?? '0' } }
+    }
+    await reconcile(database, 'owner-a', adapter, providers)
+    expect(polls).toEqual(['worker-topic', 'steward-topic'])
+    database.close()
+  })
+
+  it('drives only the scoped Work Item inbox and outbox effects', async () => {
+    const database = db()
+    await reachInProgress(database)
+    const secondRegistration = registration('second-worker-topic', 'second-steward-topic')
+    secondRegistration.eventId = 'event-register-2'
+    secondRegistration.idempotencyKey = 'register-2'
+    secondRegistration.entityRef = 'work_item:wi-2'
+    secondRegistration.payload.workItemId = 'wi-2'
+    const secondBundle = bundle('catsco-user:559')
+    secondBundle.eventId = 'event-bundle-2'
+    secondBundle.idempotencyKey = 'bundle-2'
+    secondBundle.entityRef = 'work_item:wi-2'
+    secondBundle.payload.workItemId = 'wi-2'
+    secondBundle.payload.attemptId = 'attempt-2'
+    ingest(database, 'owner-a', secondRegistration, providers)
+    ingest(database, 'owner-a', secondBundle, { ...providers, id: prefix => `${prefix}-two` })
+    await processPending(database, 'owner-a', processingAdapters)
+    const candidate = validCandidateEvent('scoped-drive')
+    const sentReceipts = new Map<string, CatscoMessageReceipt>()
+    const adapter: CatscoAdapter = {
+      me: async () => ({ uid: 'owner-a' }),
+      findMessage: async (_topicId, clientMsgId) => sentReceipts.get(clientMsgId) ?? null,
+      sendExistingTopic: async request => {
+        const receipt = { messageId: `sent-${request.clientMsgId}`, clientMsgId: request.clientMsgId, duplicate: false,
+          contentDigest: sha256(request.content), serverConfirmed: true, serverReceivedAt: serverTime }
+        sentReceipts.set(request.clientMsgId, receipt)
+        return receipt
+      },
+      poll: async (topicId, cursor) => topicId === 'worker-topic'
+        ? { observations: [{ event: candidate, attestation: { topicId, seqId: '10', senderUid: '559', serverReceivedAt: serverTime } }], nextCursor: '10' }
+        : { observations: [], nextCursor: cursor ?? '0' }
+    }
+    const result = await reconcile(database, 'owner-a', adapter, providers, 'wi-1', {
+      mode: 'drive', processingAdapters: {
+        runtime: { verify: async () => undefined },
+        github: { readPullRequest: async () => ({ repository: 'acme/repo', prNumber: 7, headSha: 'head-123', baseSha: 'base-123', changedPaths: ['src/provider.ts'] }) },
+        reviewer: processingAdapters.reviewer
+      }
+    })
+    expect(result).toMatchObject({ status: 'driven', processed: 1, effects: { satisfied: 1 } })
+    expect(database.prepare("SELECT state FROM actions WHERE work_item_id='wi-1' AND kind='review_candidate'").get()).toEqual({ state: 'satisfied' })
+    expect(database.prepare("SELECT state FROM actions WHERE work_item_id='wi-2' AND kind='execute_attempt'").get()).toEqual({ state: 'ready' })
     database.close()
   })
 
@@ -546,6 +656,7 @@ describe('CatsCo reconciliation cursor safety', () => {
   it('does not advance a topic cursor when observation attestation authority fails', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
     await processPending(database, 'owner-a', processingAdapters)
     database.prepare(`INSERT INTO source_cursors(owner_uid,source,scope_key,cursor_json,updated_at)
       VALUES('owner-a','catsco','worker-topic','"7"',?)`).run(now)
@@ -569,6 +680,7 @@ describe('CatsCo reconciliation cursor safety', () => {
   it('does not advance cursors when durable ingest fails', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
     await processPending(database, 'owner-a', processingAdapters)
     const existingInbox = database.prepare('SELECT inbox_id FROM inbox LIMIT 1').get() as { inbox_id: string }
     const adapter: CatscoAdapter = {
@@ -586,9 +698,23 @@ describe('CatsCo reconciliation cursor safety', () => {
     database.close()
   })
 
-  it('does not advance an earlier topic when a later topic poll fails', async () => {
+  it('does not advance an earlier worker cursor when a later assigned worker topic poll fails', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
+    const second = registration('second-worker-topic', 'second-steward-topic')
+    second.eventId = 'event-register-2'
+    second.idempotencyKey = 'register-2'
+    second.entityRef = 'work_item:wi-2'
+    second.payload.workItemId = 'wi-2'
+    ingest(database, 'owner-a', second, providers)
+    const secondBundle = bundle()
+    secondBundle.eventId = 'event-bundle-2'
+    secondBundle.idempotencyKey = 'bundle-2'
+    secondBundle.entityRef = 'work_item:wi-2'
+    secondBundle.payload.workItemId = 'wi-2'
+    secondBundle.payload.attemptId = 'attempt-2'
+    ingest(database, 'owner-a', secondBundle, providers)
     await processPending(database, 'owner-a', processingAdapters)
     const observed = event('reconcile_tick', 'staged-before-failure', { scope: 'wi-1' })
     const adapter: CatscoAdapter = {
@@ -596,7 +722,7 @@ describe('CatsCo reconciliation cursor safety', () => {
       findMessage: async () => null,
       sendExistingTopic: async () => { throw new Error('not used') },
       poll: async topicId => {
-        if (topicId === 'steward-topic') throw new Error('poll failed')
+        if (topicId === 'second-worker-topic') throw new Error('poll failed')
         return { observations: [{ event: observed, attestation: {
           topicId, seqId: '1', senderUid: '559', serverReceivedAt: serverTime
         } }], nextCursor: '1' }
@@ -613,6 +739,7 @@ describe('CatsCo reconciliation cursor safety', () => {
   it('does not advance an existing cursor when the legacy window overflows', async () => {
     const database = db()
     ingest(database, 'owner-a', registration(), providers)
+    ingest(database, 'owner-a', bundle(), providers)
     await processPending(database, 'owner-a', processingAdapters)
     database.prepare(`INSERT INTO source_cursors(owner_uid,source,scope_key,cursor_json,updated_at)
       VALUES('owner-a','catsco','worker-topic','"10"',?)`).run(now)

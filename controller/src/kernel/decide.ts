@@ -15,7 +15,11 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
   if (event.type === 'work_item_registered') {
     if (work) return reject('work_item_exists', work.revision)
     const p = event.payload
-    const next: WorkItemSnapshot = { ...p, stewardPrincipal: p.stewardPrincipal ?? 'steward', revision: 1, state: 'ready' }
+    const { evidenceTopicId, ...registration } = p
+    const next: WorkItemSnapshot = {
+      ...registration, ...(evidenceTopicId ? { evidenceTopicId } : {}),
+      stewardPrincipal: p.stewardPrincipal ?? 'steward', revision: 1, state: 'ready'
+    }
     return { kind: 'commit', expectedRevision: null, nextWorkItem: next, actions: [], effects: [], receiptFields: { workItemId: p.workItemId, workItemRevision: 1 } }
   }
   if (!work) return reject('work_item_not_found', null)
@@ -28,26 +32,61 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
     if (snapshot.attempt && snapshot.attempt.generation >= p.generation) return reject('stale_generation', work.revision)
     for (const key of ['taskContractHash','referenceSnapshotHash','writeScopeHash','acceptanceContractHash'] as const)
       if (p[key] !== work[key]) return reject('contract_binding_mismatch', work.revision)
+
+    const mustReplaceRoute = snapshot.attempt?.controlState === 'superseded'
+    if (mustReplaceRoute && !p.attemptRoute) return reject('recovery_route_required', work.revision)
+    const route = p.attemptRoute
+    if (route && new Set([route.workerTopicId, route.evidenceTopicId, route.stewardTopicId]).size !== 3) {
+      return reject('attempt_route_topics_must_be_distinct', work.revision)
+    }
+    const priorTopics = new Set([work.workerTopicId, work.evidenceTopicId, work.stewardTopicId].filter(Boolean))
+    if (mustReplaceRoute && route && [route.workerTopicId, route.evidenceTopicId, route.stewardTopicId]
+      .some(topicId => priorTopics.has(topicId))) return reject('recovery_route_not_fresh', work.revision)
+
     const revision = work.revision + 1
-    const nextWorkItem = { ...work, revision, state: 'assigned' as const }
+    const nextWorkItem: WorkItemSnapshot = route
+      ? { ...work, ...route, revision, state: 'assigned' }
+      : { ...work, revision, state: 'assigned' }
+    const requiresReadiness = Boolean(nextWorkItem.evidenceTopicId)
     const nextAttempt = { attemptId: p.attemptId, workItemId: p.workItemId, workItemRevision: revision, attemptNumber: p.attemptNumber,
-      generation: p.generation, controlState: 'allocated', reportedState: 'unknown', connectionState: 'unknown', runtimePrincipal: p.runtimePrincipal,
+      generation: p.generation, controlState: requiresReadiness ? 'preflight' : 'allocated', reportedState: 'unknown', connectionState: 'unknown', runtimePrincipal: p.runtimePrincipal,
       proofMode: p.proofMode ?? 'ed25519', ...(p.proofKeyId ? { proofKeyId: p.proofKeyId } : {}),
       ...(p.proofPublicKey ? { proofPublicKey: p.proofPublicKey } : {}), leaseExpiresAt: p.leaseExpiresAt,
       taskContractHash: p.taskContractHash, referenceSnapshotHash: p.referenceSnapshotHash, writeScopeHash: p.writeScopeHash,
       acceptanceContractHash: p.acceptanceContractHash, workBundle: p.workBundle }
-    const action: ActionPlan = { actionId: stable('action','execute',p.attemptId,p.generation), actionKey: stable('execute_attempt',p.attemptId,p.generation), kind: 'execute_attempt',
+    const actionKind = requiresReadiness ? 'preflight_attempt' : 'execute_attempt'
+    const action: ActionPlan = { actionId: stable('action', requiresReadiness ? 'preflight' : 'execute', p.attemptId, p.generation),
+      actionKey: stable(actionKind, p.attemptId, p.generation), kind: actionKind,
       workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: p.runtimePrincipal,
-      targetDigest: p.workBundle.contractDigest, targetTopicId: work.workerTopicId }
+      targetDigest: p.workBundle.contractDigest, targetTopicId: nextWorkItem.workerTopicId }
     return { kind: 'commit', expectedRevision: work.revision, nextWorkItem, nextAttempt, actions: [action], effects: [wake(action)], receiptFields: { workItemId: work.workItemId, workItemRevision: revision, actionIds: [action.actionId] } }
   }
   const attempt = snapshot.attempt
+  if (event.type === 'worker_ready') {
+    const p = event.payload
+    if (!attempt || attempt.attemptId !== p.attemptId) return reject('attempt_mismatch', work.revision)
+    if (work.state !== 'assigned' || p.expectedRevision !== work.revision) return reject('stale_work_item_revision', work.revision)
+    if (attempt.generation !== p.generation) return reject('stale_generation', work.revision)
+    if (attempt.runtimePrincipal !== p.runtimePrincipal) return reject('runtime_principal_mismatch', work.revision)
+    if (attempt.controlState !== 'preflight') return reject('attempt_not_awaiting_readiness', work.revision)
+    const revision = work.revision + 1
+    const action: ActionPlan = { actionId: stable('action','execute',p.attemptId,p.generation), actionKey: stable('execute_attempt',p.attemptId,p.generation), kind: 'execute_attempt',
+      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: p.runtimePrincipal,
+      targetDigest: attempt.workBundle && typeof attempt.workBundle === 'object' && 'contractDigest' in attempt.workBundle
+        ? String((attempt.workBundle as { contractDigest: unknown }).contractDigest)
+        : digestJson(attempt.workBundle), targetTopicId: work.workerTopicId }
+    return { kind: 'commit', expectedRevision: work.revision,
+      nextWorkItem: { ...work, revision, state: 'assigned' },
+      nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'allocated', connectionState: 'connected' },
+      actions: [action], effects: [wake(action)], receiptFields: { workItemId: work.workItemId, workItemRevision: revision, actionIds: [action.actionId] } }
+  }
   if (event.type === 'runtime_started') {
     const p = event.payload
     if (!attempt || attempt.attemptId !== p.attemptId) return reject('attempt_mismatch', work.revision)
     if (work.state !== 'assigned' || p.expectedRevision !== work.revision) return reject('stale_work_item_revision', work.revision)
     if (attempt.generation !== p.generation) return reject('stale_generation', work.revision)
     if (attempt.runtimePrincipal !== p.runtimePrincipal) return reject('runtime_principal_mismatch', work.revision)
+    if (attempt.controlState !== 'allocated') return reject('attempt_not_dispatched', work.revision)
     const revision = work.revision + 1
     return { kind: 'commit', expectedRevision: work.revision, nextWorkItem: { ...work, revision, state: 'in_progress' },
       nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'running', connectionState: 'connected' }, actions: [], effects: [], receiptFields: { workItemId: work.workItemId, workItemRevision: revision } }
@@ -59,6 +98,29 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
     if (event.type === 'runtime_connection_observed') nextAttempt.connectionState = event.payload.connectionState
     if (event.type === 'catsco_task_status_observed') nextAttempt.reportedState = event.payload.state === 'completed' ? 'completion_reported' : event.payload.state
     return { kind: 'commit', expectedRevision: work.revision, nextAttempt, actions: [], effects: [], receiptFields: { workItemId: work.workItemId, workItemRevision: work.revision } }
+  }
+  if (event.type === 'attempt_readiness_timed_out' || event.type === 'attempt_dispatch_timed_out') {
+    const p = event.payload
+    if (!attempt || attempt.attemptId !== p.attemptId) return reject('attempt_mismatch', work.revision)
+    if (attempt.generation !== p.generation) return reject('stale_generation', work.revision)
+    if (snapshot.candidate?.attemptId === attempt.attemptId && snapshot.candidate.generation === attempt.generation) return reject('candidate_exists', work.revision)
+    if (p.expectedRevision !== work.revision || work.state !== 'assigned') return reject('stale_work_item_revision', work.revision)
+    const expectedControlState = event.type === 'attempt_readiness_timed_out' ? 'preflight' : 'allocated'
+    if (attempt.controlState !== expectedControlState || attempt.reportedState !== 'unknown') return reject('attempt_not_timeout_eligible', work.revision)
+    const reason = event.type === 'attempt_readiness_timed_out' ? 'worker_readiness_timeout' : 'runtime_start_timeout'
+    const revision = work.revision + 1
+    const action: ActionPlan = {
+      actionId: stable('action','recover',attempt.attemptId,attempt.generation),
+      actionKey: stable('recover_attempt',attempt.attemptId,attempt.generation), kind: 'recover_attempt',
+      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal,
+      targetDigest: digestJson({ workItemId: work.workItemId, attemptId: attempt.attemptId, generation: attempt.generation, reason, revision }),
+      targetTopicId: work.stewardTopicId
+    }
+    return { kind: 'commit', expectedRevision: work.revision,
+      nextWorkItem: { ...work, revision, state: 'ready' },
+      nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'superseded', reportedState: reason, connectionState: 'disconnected' },
+      actions: [action], effects: [wake(action)],
+      receiptFields: { workItemId: work.workItemId, workItemRevision: revision, attemptId: attempt.attemptId, generation: attempt.generation, actionIds: [action.actionId] } }
   }
   if (event.type === 'attempt_abandoned') {
     const p = event.payload

@@ -20,7 +20,7 @@ export async function validateCandidate(db: SqliteDatabase, ownerUid: string, ro
   try {
     await runtime.verify(ownerUid, event.payload, attempt, {
       trustedIngressAt: String(row.trusted_ingress_at),
-      expectedWorkerTopicId: work.workerTopicId,
+      expectedEvidenceTopicId: work.evidenceTopicId ?? work.workerTopicId,
       ...(attestation ? { attestation } : {})
     })
   } catch(error) { throw new CandidateRejection('runtime_proof_invalid', error instanceof Error?error.message:String(error)) }

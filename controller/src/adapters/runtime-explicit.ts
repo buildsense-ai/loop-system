@@ -17,7 +17,7 @@ export class CatscoMessageRuntimeProofAdapter implements RuntimeProofAdapter {
     if (packet.runtimePrincipal !== attempt.runtimePrincipal || packet.runtimePrincipal !== senderPrincipal) {
       throw new Error('runtime proof principal mismatch')
     }
-    if (attestation.topicId !== context.expectedWorkerTopicId) throw new Error('runtime proof worker topic mismatch')
+    if (attestation.topicId !== context.expectedEvidenceTopicId) throw new Error('runtime proof evidence topic mismatch')
     if (attestation.serverReceivedAt !== context.trustedIngressAt) throw new Error('runtime proof ingress time mismatch')
     if (Date.parse(attestation.serverReceivedAt) > Date.parse(attempt.leaseExpiresAt)) {
       throw new Error('runtime proof lease expired')

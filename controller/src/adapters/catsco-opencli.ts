@@ -166,7 +166,7 @@ export class OpenCliCatscoAdapter implements CatscoAdapter {
       let json: unknown
       try { json = JSON.parse(item.content) } catch { return [] }
       const parsed = ingressEventSchema.safeParse(json)
-      if (!parsed.success || (parsed.data.type !== 'candidate_submitted' && parsed.data.type !== 'review_decided' && parsed.data.type !== 'runtime_started')) return []
+      if (!parsed.success || (parsed.data.type !== 'worker_ready' && parsed.data.type !== 'candidate_submitted' && parsed.data.type !== 'review_decided' && parsed.data.type !== 'runtime_started')) return []
       return [{ event: parsed.data, attestation: item.attestation }]
     })
     return { observations, nextCursor: String(nextCursor) }

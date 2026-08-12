@@ -54,14 +54,14 @@ class FakeCatsco implements CatscoAdapter {
       messageId: `message-${this.messages.size + 1}`,
       clientMsgId: request.clientMsgId,
       duplicate: false,
-      contentDigest: sha256(request.content)
+      contentDigest: sha256(request.content), serverConfirmed: true, serverReceivedAt: sentAt
     }
     this.messages.set(request.clientMsgId, receipt)
     return receipt
   }
 }
 
-it('marks an assigned attempt bridge-unavailable after a bounded post-send timeout', async () => {
+it('fences an assigned no-start Attempt after a server-confirmed dispatch timeout', async () => {
   const db = database()
   ingest(db, 'owner-a', event('work_item_registered', 'register', {
     workItemId: 'wi-1', loopId: 'loop-1', profileId: 'product@1', terminalState: 'accepted', ...hashes,
@@ -82,13 +82,15 @@ it('marks an assigned attempt bridge-unavailable after a bounded post-send timeo
   })
 
   const first = await reconcile(db, 'owner-a', catsco, { now: () => later, id: prefix => `${prefix}-watchdog` }, undefined, { runtimeStartTimeoutMs: 60_000 })
-  expect(first).toMatchObject({ status: 'enqueued', observations: 0, bridgeUnavailable: 1 })
+  expect(first).toMatchObject({ status: 'enqueued', observations: 0, dispatchTimedOut: 1 })
   await processPending(db, 'owner-a', processingAdapters)
-  expect(loadSnapshot(db, 'owner-a', 'wi-1').attempt).toMatchObject({
-    controlState: 'allocated', reportedState: 'runtime_bridge_unavailable', connectionState: 'unknown'
+  expect(loadSnapshot(db, 'owner-a', 'wi-1')).toMatchObject({
+    workItem: { state: 'ready', revision: 3 },
+    attempt: { controlState: 'superseded', reportedState: 'runtime_start_timeout', connectionState: 'disconnected' }
   })
+  expect(db.prepare("SELECT count(*) count FROM actions WHERE kind='recover_attempt' AND state='ready'").get()).toEqual({ count: 1 })
 
   const second = await reconcile(db, 'owner-a', catsco, { now: () => later, id: prefix => `${prefix}-watchdog-again` }, undefined, { runtimeStartTimeoutMs: 60_000 })
-  expect(second).toMatchObject({ bridgeUnavailable: 0 })
+  expect(second).toMatchObject({ dispatchTimedOut: 0 })
   db.close()
 })

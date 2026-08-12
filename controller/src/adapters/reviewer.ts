@@ -9,7 +9,8 @@ export interface ReviewerAuthorityReceipt {
 
 export interface ReviewerAuthorityContext {
   trustedIngressAt: string
-  expectedStewardTopicId: string
+  /** Quiet attested evidence lane; legacy Attempts fall back to stewardTopicId. */
+  expectedEvidenceTopicId: string
   expectedStewardPrincipal: string
   attestation?: CatscoMessageAttestation
 }
@@ -43,7 +44,7 @@ export class CatscoReviewerAuthorityAdapter implements ReviewerAuthorityAdapter 
     const attestation = context.attestation
     if (!attestation) return this.unattested.verify(ownerUid, decision, context)
     const principal = `catsco-user:${attestation.senderUid}`
-    if (attestation.topicId !== context.expectedStewardTopicId) throw new Error('reviewer topic mismatch')
+    if (attestation.topicId !== context.expectedEvidenceTopicId) throw new Error('reviewer evidence topic mismatch')
     if (principal !== context.expectedStewardPrincipal || principal !== decision.reviewerPrincipal) {
       throw new Error('reviewer principal mismatch')
     }

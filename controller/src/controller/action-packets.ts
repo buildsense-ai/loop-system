@@ -10,7 +10,7 @@ const json = <T>(value: unknown): T => JSON.parse(String(value)) as T
 function actionRow(db: SqliteDatabase, ownerUid: string, actionId: string): Row {
   const row = db.prepare(`SELECT a.*,w.state work_state,w.loop_id,w.profile_id,w.terminal_state,
     w.task_contract_hash,w.reference_snapshot_hash,w.write_scope_json,w.write_scope_hash,
-    w.acceptance_contract_hash,w.github_repo,w.catsco_project_id,w.worker_topic_id,
+    w.acceptance_contract_hash,w.github_repo,w.catsco_project_id,w.worker_topic_id,w.evidence_topic_id,
     w.steward_topic_id,w.steward_principal,
     at.attempt_id,at.work_item_revision attempt_work_item_revision,at.attempt_number,at.generation,
     at.control_state,at.reported_state,at.connection_state,at.runtime_principal,at.proof_mode,
@@ -24,10 +24,13 @@ function actionRow(db: SqliteDatabase, ownerUid: string, actionId: string): Row 
       AND c.ingress_sequence=(SELECT MAX(ingress_sequence) FROM candidates WHERE owner_uid=a.owner_uid AND work_item_id=a.work_item_id)
     WHERE a.owner_uid=? AND a.action_id=?`).get(ownerUid, actionId) as Row | undefined
   if (!row) throw new Error(`action not found: ${actionId}`)
-  const allowed = (row.kind === 'execute_attempt' && row.work_state === 'assigned') ||
+  const needsCurrentAttempt = row.kind === 'preflight_attempt' || row.kind === 'execute_attempt'
+  const allowed = (needsCurrentAttempt && row.work_state === 'assigned') ||
+    (row.kind === 'recover_attempt' && row.work_state === 'ready') ||
     (row.kind === 'review_candidate' && row.work_state === 'candidate') ||
     (row.kind === 'plan_next' && (row.work_state === 'accepted' || row.work_state === 'closed'))
-  if (!['ready', 'satisfied'].includes(String(row.state)) || !allowed || Number(row.work_item_revision) !== Number(row.work_state === 'assigned' ? row.attempt_work_item_revision : row.work_item_revision)) {
+  if (!['ready', 'satisfied'].includes(String(row.state)) || !allowed ||
+    (needsCurrentAttempt && Number(row.work_item_revision) !== Number(row.attempt_work_item_revision))) {
     throw new Error('stale action projection: action state, revision, or target state changed')
   }
   return row
@@ -52,11 +55,13 @@ function common(row: Row) {
 
 function render(row: Row): Record<string, unknown> {
   const base = common(row)
-  if (row.kind === 'execute_attempt') {
+  if (row.kind === 'preflight_attempt' || row.kind === 'execute_attempt') {
     const packet = {
-      kind: 'execute_attempt', schema: ACTION_PACKET_SCHEMA, ...base,
+      kind: String(row.kind), schema: ACTION_PACKET_SCHEMA, ...base,
       loopId: String(row.loop_id), profileId: String(row.profile_id),
-      workerTopicId: String(row.worker_topic_id), githubRepo: String(row.github_repo),
+      workerTopicId: String(row.worker_topic_id),
+      ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
+      githubRepo: String(row.github_repo),
       writeScope: json(row.write_scope_json),
       attemptId: String(row.attempt_id), attemptNumber: Number(row.attempt_number), generation: Number(row.generation),
       runtimePrincipal: String(row.runtime_principal), leaseExpiresAt: String(row.lease_expires_at),
@@ -64,6 +69,22 @@ function render(row: Row): Record<string, unknown> {
       ...(String(row.proof_key_id) ? { proofKeyId: String(row.proof_key_id) } : {}),
       ...(String(row.proof_public_key) ? { proofPublicKey: String(row.proof_public_key) } : {}),
       workBundle: json(row.work_bundle_json)
+    }
+    return { ...packet, packetDigest: digestJson(packet) }
+  }
+  if (row.kind === 'recover_attempt') {
+    const packet = {
+      kind: 'recover_attempt', schema: ACTION_PACKET_SCHEMA, ...base,
+      loopId: String(row.loop_id), profileId: String(row.profile_id), githubRepo: String(row.github_repo),
+      catscoProjectId: String(row.catsco_project_id), workerTopicId: String(row.worker_topic_id),
+      ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
+      stewardPrincipal: String(row.steward_principal), stewardTopicId: String(row.steward_topic_id),
+      previousAttempt: {
+        attemptId: String(row.attempt_id), attemptNumber: Number(row.attempt_number), generation: Number(row.generation),
+        controlState: String(row.control_state), reportedState: String(row.reported_state), leaseExpiresAt: String(row.lease_expires_at),
+        runtimePrincipal: String(row.runtime_principal), workBundle: json(row.work_bundle_json)
+      },
+      recovery: { requireFreshWorkerTopic: true, requireFreshEvidenceTopic: true, requireFreshStewardTopic: true, requireFreshWorktree: true, requireFreshWorkspaceLease: true }
     }
     return { ...packet, packetDigest: digestJson(packet) }
   }
@@ -76,7 +97,9 @@ function render(row: Row): Record<string, unknown> {
       kind: 'review_candidate', schema: ACTION_PACKET_SCHEMA, ...base,
       loopId: String(row.loop_id), profileId: String(row.profile_id), githubRepo: String(row.github_repo),
       stewardPrincipal: String(row.steward_principal),
-      stewardTopicId: String(row.steward_topic_id), acceptanceContractHash: String(row.acceptance_contract_hash), candidate
+      stewardTopicId: String(row.steward_topic_id),
+      ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
+      acceptanceContractHash: String(row.acceptance_contract_hash), candidate
     }
     return { ...packet, packetDigest: digestJson(packet) }
   }

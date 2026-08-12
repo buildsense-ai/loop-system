@@ -50,6 +50,28 @@ function rejectInboxWithin(
 
 const numericCatscoPrincipal = /^catsco-user:[1-9]\d*$/
 
+function preflightActionSatisfied(
+  db: SqliteDatabase,
+  ownerUid: string,
+  payload: { workItemId: string; expectedRevision: number; attemptId: string; generation: number; runtimePrincipal: string },
+  readinessReceivedAt: string
+): boolean {
+  const row = db.prepare(`SELECT json_extract(er.receipt_json,'$.serverConfirmed') serverConfirmed,
+      json_extract(er.receipt_json,'$.serverReceivedAt') serverReceivedAt
+    FROM actions action
+    JOIN outbox o ON o.owner_uid=action.owner_uid AND o.action_id=action.action_id
+    JOIN effect_receipts er ON er.owner_uid=o.owner_uid AND er.effect_key=o.effect_key
+    WHERE action.owner_uid=? AND action.action_id=? AND action.kind='preflight_attempt'
+      AND action.state='satisfied' AND action.work_item_id=? AND action.work_item_revision=?
+      AND action.target_principal=?`
+  ).get(
+    ownerUid, `action:preflight:${payload.attemptId}:${payload.generation}`,
+    payload.workItemId, payload.expectedRevision, payload.runtimePrincipal
+  ) as { serverConfirmed: number | null; serverReceivedAt: string | null } | undefined
+  return Boolean(row?.serverConfirmed === 1 && row.serverReceivedAt &&
+    Number.isFinite(Date.parse(row.serverReceivedAt)) && Date.parse(readinessReceivedAt) > Date.parse(row.serverReceivedAt))
+}
+
 function invalidGroupPrincipal(event: KernelEvent, snapshot: KernelSnapshot): boolean {
   if (event.type === 'work_item_registered') {
     const groupSteward = event.payload.stewardTopicId.startsWith('grp_')
@@ -74,18 +96,23 @@ function saveWork(
     db.prepare(`INSERT INTO work_items(
       owner_uid,work_item_id,revision,ledger_revision,state,loop_id,profile_id,terminal_state,
       task_contract_hash,reference_snapshot_hash,write_scope_json,write_scope_hash,
-      acceptance_contract_hash,github_repo,catsco_project_id,worker_topic_id,steward_topic_id,steward_principal,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      acceptance_contract_hash,github_repo,catsco_project_id,worker_topic_id,evidence_topic_id,steward_topic_id,steward_principal,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       ownerUid, work.workItemId, work.revision, ledger, work.state, work.loopId, work.profileId,
       work.terminalState, work.taskContractHash, work.referenceSnapshotHash, canonicalize(work.writeScope),
       work.writeScopeHash, work.acceptanceContractHash, work.githubRepo, work.catscoProjectId,
-      work.workerTopicId, work.stewardTopicId, work.stewardPrincipal, now
+      work.workerTopicId, work.evidenceTopicId ?? '', work.stewardTopicId, work.stewardPrincipal, now
     )
     return
   }
-  const result = db.prepare(`UPDATE work_items SET revision=?,ledger_revision=?,state=?,updated_at=?
+  const result = db.prepare(`UPDATE work_items SET revision=?,ledger_revision=?,state=?,catsco_project_id=?,
+    worker_topic_id=?,evidence_topic_id=?,steward_topic_id=?,steward_principal=?,updated_at=?
     WHERE owner_uid=? AND work_item_id=? AND revision=?`
-  ).run(work.revision, ledger, work.state, now, ownerUid, work.workItemId, expected)
+  ).run(
+    work.revision, ledger, work.state, work.catscoProjectId, work.workerTopicId,
+    work.evidenceTopicId ?? '', work.stewardTopicId, work.stewardPrincipal, now,
+    ownerUid, work.workItemId, expected
+  )
   if (result.changes !== 1) throw new Error('optimistic revision conflict')
 }
 
@@ -157,14 +184,21 @@ export async function processInboxRow(
       .get(ownerUid, ingress.payload.candidateId)
     if (reusedCandidate) return rejectInbox(db, ownerUid, String(row.inbox_id), 'candidate_id_conflict')
   }
-  if (ingress.type === 'runtime_started') {
+  if ((ingress.type === 'attempt_readiness_timed_out' || ingress.type === 'attempt_dispatch_timed_out') && ingress.source !== 'loopctl-watchdog') {
+    return rejectInbox(db, ownerUid, String(row.inbox_id), 'attempt_timeout_unauthorized_source')
+  }
+  if (ingress.type === 'worker_ready' || ingress.type === 'runtime_started') {
+    const label = ingress.type === 'worker_ready' ? 'worker_ready' : 'runtime_started'
     const attestation = parseCatscoAttestation(row)
     const snapshot = loadSnapshot(db, ownerUid, ingress.payload.workItemId)
     const attempt = snapshot.attempt
     const work = snapshot.workItem
+    const evidenceTopicId = work?.evidenceTopicId ?? work?.workerTopicId
+    const requiresCanonicalEventBinding = Boolean(work?.evidenceTopicId)
     const valid = attestation && work && attempt &&
-      attestation.topicId === work.workerTopicId &&
+      attestation.topicId === evidenceTopicId &&
       `catsco-user:${attestation.senderUid}` === attempt.runtimePrincipal &&
+      (!requiresCanonicalEventBinding || (ingress.source === attempt.runtimePrincipal && ingress.entityRef === `attempt:${attempt.attemptId}`)) &&
       ingress.payload.runtimePrincipal === attempt.runtimePrincipal &&
       ingress.payload.attemptId === attempt.attemptId &&
       ingress.payload.generation === attempt.generation &&
@@ -172,20 +206,20 @@ export async function processInboxRow(
       Date.parse(attestation.serverReceivedAt) <= Date.parse(attempt.leaseExpiresAt) &&
       ingress.payload.signature === 'catsco-message-attested'
     if (!valid) {
-      const code = !attestation ? 'runtime_started_unattested'
-        : attestation.topicId !== work?.workerTopicId ? 'runtime_started_wrong_topic'
-        : `catsco-user:${attestation.senderUid}` !== attempt?.runtimePrincipal ? 'runtime_started_wrong_sender'
-        : Date.parse(attestation.serverReceivedAt) > Date.parse(attempt?.leaseExpiresAt ?? '') ? 'runtime_started_lease_expired'
-        : 'runtime_started_stale'
+      const code = !attestation ? `${label}_unattested`
+        : attestation.topicId !== evidenceTopicId ? `${label}_wrong_topic`
+        : `catsco-user:${attestation.senderUid}` !== attempt?.runtimePrincipal ? `${label}_wrong_sender`
+        : Date.parse(attestation.serverReceivedAt) > Date.parse(attempt?.leaseExpiresAt ?? '') ? `${label}_lease_expired`
+        : `${label}_stale`
       return rejectInbox(db, ownerUid, String(row.inbox_id), code)
     }
   }
-  // attempt_abandoned is enriched with the durable inbox timestamp below before it reaches the kernel.
-  let event: KernelEvent = ingress as Exclude<IngressEvent, { type: 'attempt_abandoned' }>
+  // Controller-generated Attempt timeout events are enriched with durable inbox time before reaching the kernel.
+  let event: KernelEvent = ingress as Exclude<IngressEvent, { type: 'attempt_abandoned' | 'attempt_readiness_timed_out' | 'attempt_dispatch_timed_out' }>
   try {
-    if (ingress.type === 'attempt_abandoned') {
+    if (ingress.type === 'attempt_abandoned' || ingress.type === 'attempt_readiness_timed_out' || ingress.type === 'attempt_dispatch_timed_out') {
       event = {
-        type: 'attempt_abandoned', eventId: ingress.eventId,
+        type: ingress.type, eventId: ingress.eventId,
         ingressSequence: Number(row.ingress_sequence), trustedIngressAt: String(row.trusted_ingress_at),
         payload: ingress.payload
       }
@@ -246,6 +280,13 @@ export async function processInboxRow(
       : event.payload.workItemId
     if (invalidGroupPrincipal(event, loadSnapshot(db, ownerUid, workItemId))) {
       return rejectInboxWithin(db, ownerUid, fresh, 'invalid_group_target_principal')
+    }
+    if ((event.type === 'attempt_readiness_timed_out' || event.type === 'attempt_dispatch_timed_out') &&
+      (String(fresh.source) !== 'loopctl-watchdog' || String(fresh.entity_ref) !== `attempt:${event.payload.attemptId}`)) {
+      return rejectInboxWithin(db, ownerUid, fresh, 'attempt_timeout_unauthorized_source')
+    }
+    if (event.type === 'worker_ready' && !preflightActionSatisfied(db, ownerUid, event.payload, String(fresh.trusted_ingress_at))) {
+      return rejectInboxWithin(db, ownerUid, fresh, 'worker_ready_before_preflight_receipt')
     }
     if (event.type === 'work_bundle_proposed') {
       const existingAttempt = db.prepare(`SELECT work_item_id FROM attempts WHERE owner_uid=? AND attempt_id=?`)
@@ -323,10 +364,14 @@ export async function processPending(
   db: SqliteDatabase,
   ownerUid: string,
   adapters: ProcessingAdapters,
-  maxEvents = 100
+  maxEvents = 100,
+  workItemId?: string
 ): Promise<TransitionReceipt[]> {
   const rows = db.prepare(`SELECT * FROM inbox WHERE owner_uid=? AND status='pending'
-    ORDER BY ingress_sequence LIMIT ?`).all(ownerUid, maxEvents) as Record<string, unknown>[]
+    ${workItemId ? "AND (entity_ref=? OR json_extract(raw_json,'$.payload.workItemId')=?)" : ''}
+    ORDER BY ingress_sequence LIMIT ?`).all(
+      ownerUid, ...(workItemId ? [`work_item:${workItemId}`, workItemId] : []), maxEvents
+    ) as Record<string, unknown>[]
   const receipts: TransitionReceipt[] = []
   for (const row of rows) {
     const receipt = await processInboxRow(db, ownerUid, row, adapters)

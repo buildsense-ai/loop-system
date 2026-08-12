@@ -9,7 +9,9 @@ export function loadSnapshot(db: SqliteDatabase, ownerUid: string, workItemId: s
   const c = db.prepare('SELECT * FROM candidates WHERE owner_uid=? AND work_item_id=? ORDER BY ingress_sequence DESC LIMIT 1').get(ownerUid, workItemId) as Record<string, unknown> | undefined
   const workItem: WorkItemSnapshot = {
     workItemId: String(w.work_item_id), revision: Number(w.revision), state: w.state as WorkItemSnapshot['state'], loopId: String(w.loop_id), profileId: String(w.profile_id), terminalState: w.terminal_state as WorkItemSnapshot['terminalState'],
-    taskContractHash: String(w.task_contract_hash), referenceSnapshotHash: String(w.reference_snapshot_hash), writeScope: parse<string[]>(w.write_scope_json), writeScopeHash: String(w.write_scope_hash), acceptanceContractHash: String(w.acceptance_contract_hash), githubRepo: String(w.github_repo), catscoProjectId: String(w.catsco_project_id), workerTopicId: String(w.worker_topic_id), stewardTopicId: String(w.steward_topic_id), stewardPrincipal: String(w.steward_principal)
+    taskContractHash: String(w.task_contract_hash), referenceSnapshotHash: String(w.reference_snapshot_hash), writeScope: parse<string[]>(w.write_scope_json), writeScopeHash: String(w.write_scope_hash), acceptanceContractHash: String(w.acceptance_contract_hash), githubRepo: String(w.github_repo), catscoProjectId: String(w.catsco_project_id), workerTopicId: String(w.worker_topic_id),
+    ...(String(w.evidence_topic_id ?? '') ? { evidenceTopicId: String(w.evidence_topic_id) } : {}),
+    stewardTopicId: String(w.steward_topic_id), stewardPrincipal: String(w.steward_principal)
   }
   const attempt: AttemptSnapshot | null = a ? {
     attemptId: String(a.attempt_id), workItemId: String(a.work_item_id), workItemRevision: Number(a.work_item_revision), attemptNumber: Number(a.attempt_number), generation: Number(a.generation),

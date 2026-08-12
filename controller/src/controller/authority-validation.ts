@@ -71,7 +71,7 @@ export async function validateReview(
     const attestation = parseCatscoAttestation(row)
     authority = await reviewer.verify(ownerUid, p, {
       trustedIngressAt: String(row.trusted_ingress_at),
-      expectedStewardTopicId: work.stewardTopicId,
+      expectedEvidenceTopicId: work.evidenceTopicId ?? work.stewardTopicId,
       expectedStewardPrincipal: work.stewardPrincipal,
       ...(attestation ? { attestation } : {})
     })

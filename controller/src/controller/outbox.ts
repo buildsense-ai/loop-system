@@ -65,7 +65,8 @@ function assertCurrentAction(db: SqliteDatabase, ownerUid: string, row: Record<s
     JOIN work_items w ON w.owner_uid=a.owner_uid AND w.work_item_id=a.work_item_id
     WHERE a.owner_uid=? AND a.action_id=? AND a.state='ready'
       AND a.work_item_revision=? AND a.target_digest=? AND w.revision=a.work_item_revision
-      AND ((a.kind='execute_attempt' AND w.state='assigned')
+      AND ((a.kind IN ('preflight_attempt','execute_attempt') AND w.state='assigned')
+        OR (a.kind='recover_attempt' AND w.state='ready')
         OR (a.kind='review_candidate' AND w.state='candidate')
         OR (a.kind='plan_next' AND w.state IN ('accepted','closed')))`
   ).get(ownerUid, row.action_id, row.action_work_item_revision, row.action_target_digest)
@@ -77,7 +78,8 @@ export async function runOutbox(
   ownerUid: string,
   registry: EffectAdapterRegistry,
   maxEffects = 100,
-  providers: OutboxProviders = defaults
+  providers: OutboxProviders = defaults,
+  workItemId?: string
 ): Promise<{ satisfied: number; retried: number; obsolete: number; ownerMismatch: boolean }> {
   let satisfiedCount = 0
   let retried = 0
@@ -87,9 +89,11 @@ export async function runOutbox(
     const now = providers.now()
     const token = providers.token()
     const row = immediate(db, () => {
-      const found = db.prepare(`SELECT * FROM outbox WHERE owner_uid=? AND
-        ((state='pending' AND next_attempt_at<=?) OR (state='claimed' AND claim_expires_at<=?))
-        ORDER BY created_at LIMIT 1`).get(ownerUid, now, now) as Record<string, unknown> | undefined
+      const found = db.prepare(`SELECT o.* FROM outbox o
+        JOIN actions a ON a.owner_uid=o.owner_uid AND a.action_id=o.action_id
+        WHERE o.owner_uid=? AND ((o.state='pending' AND o.next_attempt_at<=?) OR (o.state='claimed' AND o.claim_expires_at<=?))
+        ${workItemId ? 'AND a.work_item_id=?' : ''}
+        ORDER BY o.created_at LIMIT 1`).get(ownerUid, now, now, ...(workItemId ? [workItemId] : [])) as Record<string, unknown> | undefined
       if (!found) return undefined
       const expires = new Date(Date.parse(now) + 30_000).toISOString()
       db.prepare(`UPDATE outbox SET state='claimed',claim_token=?,claim_expires_at=?,
@@ -130,7 +134,11 @@ export async function runOutbox(
             clientMsgId: expected.clientMsgId,
             ...(expected.targetMention ? { mention: expected.targetMention } : {})
           })
-          receipt = validateReceipt(sent, expected.clientMsgId, expected.contentDigest, false)
+          validateReceipt(sent, expected.clientMsgId, expected.contentDigest, false)
+          const confirmed = await adapter.findMessage(effect.targetTopicId, expected.clientMsgId)
+          receipt = confirmed
+            ? validateReceipt(confirmed, expected.clientMsgId, expected.contentDigest, true)
+            : null
         } catch (sendError) {
           const reconciled = await adapter.findMessage(effect.targetTopicId, expected.clientMsgId)
           receipt = reconciled
@@ -139,7 +147,7 @@ export async function runOutbox(
           if (!receipt) throw sendError
         }
       }
-      if (!receipt) throw new Error('CatsCo send produced no acknowledged receipt')
+      if (!receipt) throw new Error('CatsCo send produced no server-confirmed receipt')
       satisfy(db, ownerUid, row, receipt, now)
       satisfiedCount++
     } catch (error) {

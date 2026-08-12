@@ -3,7 +3,8 @@ import type { CandidatePacket } from '../protocol/events.js'
 import type { CatscoMessageAttestation } from './catsco.js'
 export interface RuntimeProofContext {
   trustedIngressAt: string
-  expectedWorkerTopicId: string
+  /** Quiet attested evidence lane; legacy Attempts fall back to workerTopicId. */
+  expectedEvidenceTopicId: string
   attestation?: CatscoMessageAttestation
 }
 export interface RuntimeProofAdapter {

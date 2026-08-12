@@ -9,7 +9,7 @@ import { ExplicitRuntimeProofAdapter } from '../adapters/runtime-explicit.js'
 export async function reconcileCommand(args:string[]){
   const {values}=parseArgs({args,options:{'work-item':{type:'string'},'worker-only':{type:'boolean'},drive:{type:'boolean'},'enqueue-only':{type:'boolean'}},strict:true})
   if(values.drive&&values['enqueue-only']) throw new Error('reconcile accepts either --drive or --enqueue-only, not both')
-  if(values.drive&&(values['work-item']||values['worker-only'])) throw new Error('reconcile --drive cannot be combined with --work-item or --worker-only until processing is scope-filtered')
+  if(values.drive&&values['worker-only']) throw new Error('reconcile --drive cannot be combined with --worker-only; use --work-item for a fully scoped drive')
   const {config,db}=await context()
   try {
     const catsco=new OpenCliCatscoAdapter(config.opencliCommand)

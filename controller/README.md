@@ -96,10 +96,12 @@ This proves **only the local controller pipeline**: real migrations, durable ing
 
 ## CLI workflow
 
-An authenticated CatsCo browser/OpenCLI session is required for `init`, `doctor`, stateful commands, attempted effects, and reconciliation. Changing the authenticated user selects that user's isolated `catsco/<owner_uid>/loop.db` under the same state root; it does not read or mutate another user's namespace. Reconciliation calls `catsco me` once, verifies the authenticated UID before polling or cursor changes, then deduplicates all active Worker and Steward topics. Each topic has one durable seq cursor, advanced only after durable attested ingest. After a sent `execute_attempt`, the Controller applies a bounded runtime-start watchdog (default 90 seconds, configurable with `LOOPCTL_RUNTIME_START_TIMEOUT_MS`); if no attested `runtime_started` arrives, it records `runtime_bridge_unavailable` on the Attempt without fabricating runtime execution or resending the Action. Ambient `gh` authentication is required for Candidate, review, and merge/close readback. Unattested review authority remains deliberately unavailable by default.
+An authenticated CatsCo browser/OpenCLI session is required for `init`, `doctor`, stateful commands, attempted effects, and reconciliation. Changing the authenticated user selects that user's isolated `catsco/<owner_uid>/loop.db` under the same state root; it does not read or mutate another user's namespace. Reconciliation calls `catsco me` once, verifies the authenticated UID before polling or cursor changes, then deduplicates active topics. New evidence-lane Work Items poll **only** their quiet `evidence_topic_id`; legacy Work Items retain Worker/Steward fallback polling. Each topic has one durable seq cursor, advanced only after durable attested ingest. New Attempts first dispatch a receipt-confirmed `preflight_attempt`; only an attested `worker_ready` on the evidence lane creates `execute_attempt`. After a server-confirmed execution send, the Controller applies a bounded runtime-start watchdog (default 90 seconds, configurable with `LOOPCTL_RUNTIME_START_TIMEOUT_MS`). A missing startup or readiness receipt atomically supersedes the generation, fences late events, returns the Work Item to `ready`, and creates exactly one `recover_attempt`; it never fabricates runtime execution or silently resends the old Action. Recovery requires a fresh route and worktree contract in the next bundle. Ambient `gh` authentication is required for Candidate, review, and merge/close readback. Unattested review authority remains deliberately unavailable by default.
 
 ```bash
-export LOOPCTL_STATE_ROOT="$HOME/.local/state/loopctl"
+# Production: pin one absolute root for every CLI and service invocation.
+export LOOPCTL_STATE_ROOT="/var/lib/loopctl"
+export LOOPCTL_REQUIRED_STATE_ROOT="/var/lib/loopctl"
 node dist/cli.js init --state-root "$LOOPCTL_STATE_ROOT"
 node dist/cli.js ingest --file work-item.json
 node dist/cli.js ingest --file work-bundle.json
@@ -113,10 +115,10 @@ node dist/cli.js receipt candidate:wi-1:a1 --json
 node dist/cli.js reconcile --enqueue-only
 # --drive serially polls/ingests/cursor-advances, processes pending inbox rows, then runs outbox effects.
 node dist/cli.js reconcile --drive
-node dist/cli.js doctor --json
+node dist/cli.js doctor --require-state-root --json
 ```
 
-Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. `reconcile` defaults to explicit enqueue-only semantics for compatibility; use unscoped `reconcile --drive` when the Controller must advance received Candidates through validation, Action creation, and idempotent outbox wakes in one serial control-plane cycle. `--drive` and `--enqueue-only` are mutually exclusive; `--drive` rejects `--work-item` and `--worker-only` until inbox and outbox processing have equivalent scopes. P2P topics are the default; an explicitly selected group Steward topic must already exist and be verified by the human/Review workflow. The deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
+Use `--no-effects` for dry control-plane operation. Without it, `tick` may send idempotent wakes to already-existing topics. `reconcile` defaults to explicit enqueue-only semantics for compatibility; use `reconcile --drive` when the Controller must advance received Candidates through validation, Action creation, and idempotent outbox wakes in one serial control-plane cycle. `--drive` and `--enqueue-only` are mutually exclusive. `reconcile --drive --work-item ID` is fully scoped: it polls only that Work Item’s active route, processes only its pending inbox rows, and runs only its outbox effects. This is the safe recovery path when an unrelated legacy Topic is unavailable. `--drive --worker-only` remains forbidden because it would split poll and processing scopes. P2P topics are the default; an explicitly selected group Steward topic must already exist and be verified by the human/Review workflow. The deterministic Controller itself does not create topics. Receipt semantics remain limited to the local registry plus bounded server sequence confirmation.
 
 ### Event examples
 

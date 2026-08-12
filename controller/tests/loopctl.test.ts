@@ -155,7 +155,7 @@ it('loads only package-relative migrations from an unrelated working directory',
     migrate(db)
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='work_items'").get()).toBeTruthy()
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='malicious'").get()).toBeUndefined()
-    expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }])
+    expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }])
   } finally {
     db?.close()
     globalThis.process.chdir(originalCwd)
@@ -512,7 +512,8 @@ class FakeCatsco implements CatscoAdapter {
   async sendExistingTopic(request: { content: string; clientMsgId: string }) {
     this.sends++
     if (this.failFirst && this.sends === 1) throw new Error('temporary failure')
-    const receipt = { messageId: `message-${this.sends}`, clientMsgId: request.clientMsgId, duplicate: false, contentDigest: sha256(request.content) }
+    const receipt = { messageId: `message-${this.sends}`, clientMsgId: request.clientMsgId, duplicate: false,
+      contentDigest: sha256(request.content), serverConfirmed: true, serverReceivedAt: now }
     this.messages.set(request.clientMsgId, receipt)
     return receipt
   }

@@ -33,15 +33,28 @@ export type CandidatePacket = z.infer<typeof candidatePacketSchema>
 
 const workItemRegistered = z.object({ ...base, type: z.literal('work_item_registered'), payload: z.object({
   workItemId: id, loopId: id, profileId: id, terminalState: z.enum(['accepted', 'closed']), ...contracts,
-  writeScope: z.array(id), githubRepo: id, catscoProjectId: id, workerTopicId: id, stewardTopicId: id,
+  writeScope: z.array(id), githubRepo: id, catscoProjectId: id, workerTopicId: id, evidenceTopicId: id.optional(), stewardTopicId: id,
   stewardPrincipal: id.optional()
-}).strict() }).strict()
+}).strict() }).strict().superRefine((event, context) => {
+  const p = event.payload
+  if (!p.evidenceTopicId) return
+  if (!/^grp_[1-9]\d*$/.test(p.evidenceTopicId)) {
+    context.addIssue({ code: 'custom', path: ['payload', 'evidenceTopicId'], message: 'evidenceTopicId must be a CatsCo group topic' })
+  }
+  if (new Set([p.workerTopicId, p.evidenceTopicId, p.stewardTopicId]).size !== 3) {
+    context.addIssue({ code: 'custom', path: ['payload', 'evidenceTopicId'], message: 'worker, evidence, and steward topics must be distinct' })
+  }
+})
+const attemptRouteSchema = z.object({
+  catscoProjectId: id, workerTopicId: id, evidenceTopicId: id, stewardTopicId: id, stewardPrincipal: id
+}).strict()
 const workBundlePayload = z.object({
   workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id,
   attemptNumber: z.number().int().positive(), generation: z.number().int().nonnegative(),
   runtimePrincipal: id, proofMode: z.enum(['ed25519', 'catsco-message']).optional(),
   proofKeyId: id.optional(), proofPublicKey: id.optional(), leaseExpiresAt: z.string().datetime(),
-  workBundle: z.object({ contractDigest: hash, instructions: id, deliverables: z.array(id) }).strict(), ...contracts
+  workBundle: z.object({ contractDigest: hash, instructions: id, deliverables: z.array(id) }).strict(),
+  attemptRoute: attemptRouteSchema.optional(), ...contracts
 }).strict().superRefine((payload, context) => {
   const mode = payload.proofMode ?? 'ed25519'
   if (mode === 'ed25519' && (!payload.proofKeyId || !payload.proofPublicKey)) {
@@ -52,6 +65,10 @@ const workBundlePayload = z.object({
   }
 })
 const workBundleProposed = z.object({ ...base, type: z.literal('work_bundle_proposed'), payload: workBundlePayload }).strict()
+const workerReady = z.object({ ...base, type: z.literal('worker_ready'), payload: z.object({
+  workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative(),
+  runtimePrincipal: id, signature: id
+}).strict() }).strict()
 const runtimeStarted = z.object({ ...base, type: z.literal('runtime_started'), payload: z.object({
   workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative(),
   runtimePrincipal: id, signature: id
@@ -60,6 +77,12 @@ const progress = z.object({ ...base, type: z.literal('runtime_progress_observed'
 const connection = z.object({ ...base, type: z.literal('runtime_connection_observed'), payload: z.object({ workItemId: id, attemptId: id, connectionState: z.enum(['connected','disconnected','unknown']) }).strict() }).strict()
 const taskStatus = z.object({ ...base, type: z.literal('catsco_task_status_observed'), payload: z.object({ workItemId: id, attemptId: id, state: id, runId: id }).strict() }).strict()
 const attemptAbandoned = z.object({ ...base, type: z.literal('attempt_abandoned'), payload: z.object({
+  workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative()
+}).strict() }).strict()
+const attemptReadinessTimedOut = z.object({ ...base, type: z.literal('attempt_readiness_timed_out'), payload: z.object({
+  workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative()
+}).strict() }).strict()
+const attemptDispatchTimedOut = z.object({ ...base, type: z.literal('attempt_dispatch_timed_out'), payload: z.object({
   workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative()
 }).strict() }).strict()
 const candidateSubmitted = z.object({ ...base, type: z.literal('candidate_submitted'), payload: candidatePacketSchema }).strict()
@@ -81,14 +104,19 @@ export const deliverableClosedPayloadSchema = z.object({
 const deliverableClosed = z.object({ ...base, type: z.literal('deliverable_closed_observed'), payload: deliverableClosedPayloadSchema }).strict()
 
 export const ingressEventSchema = z.discriminatedUnion('type', [
-  workItemRegistered, workBundleProposed, runtimeStarted, progress, connection,
-  taskStatus, attemptAbandoned, candidateSubmitted, orphan, reconcile, review, deliverableClosed
+  workItemRegistered, workBundleProposed, workerReady, runtimeStarted, progress, connection,
+  taskStatus, attemptAbandoned, attemptReadinessTimedOut, attemptDispatchTimedOut,
+  candidateSubmitted, orphan, reconcile, review, deliverableClosed
 ])
 export type IngressEvent = z.infer<typeof ingressEventSchema>
 
 export interface TrustedEvidence { repository: string; prNumber: number; headSha: string; baseSha: string; changedPaths: string[]; digest: string }
 export interface AttemptAbandonedValidatedEvent {
   type: 'attempt_abandoned'; eventId: string; ingressSequence: number; trustedIngressAt: string;
+  payload: { workItemId: string; expectedRevision: number; attemptId: string; generation: number }
+}
+export interface AttemptTimeoutValidatedEvent {
+  type: 'attempt_readiness_timed_out' | 'attempt_dispatch_timed_out'; eventId: string; ingressSequence: number; trustedIngressAt: string;
   payload: { workItemId: string; expectedRevision: number; attemptId: string; generation: number }
 }
 export interface CandidateValidatedEvent {
@@ -103,4 +131,5 @@ export interface DeliverableClosedValidatedEvent {
   type: 'deliverable_closed_validated'; eventId: string; ingressSequence: number; trustedIngressAt: string;
   payload: z.infer<typeof deliverableClosedPayloadSchema>; readbackDigest: string
 }
-export type KernelEvent = Exclude<IngressEvent, { type: 'attempt_abandoned' }> | AttemptAbandonedValidatedEvent | CandidateValidatedEvent | ReviewValidatedEvent | DeliverableClosedValidatedEvent
+export type KernelEvent = Exclude<IngressEvent, { type: 'attempt_abandoned' | 'attempt_readiness_timed_out' | 'attempt_dispatch_timed_out' }> |
+  AttemptAbandonedValidatedEvent | AttemptTimeoutValidatedEvent | CandidateValidatedEvent | ReviewValidatedEvent | DeliverableClosedValidatedEvent
