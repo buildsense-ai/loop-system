@@ -327,9 +327,11 @@ describe('content-addressed outbox sends', () => {
     database.exec(readFileSync(new URL('../migrations/004_catsco_attestation_authority.sql', import.meta.url), 'utf8'))
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)').run(now)
     // The fixture must carry the latest work_items shape before it creates a
-    // legacy transport row; migration 005 is otherwise unrelated to this test.
+    // legacy transport row.
     database.exec(readFileSync(new URL('../migrations/005_evidence_lanes_and_recovery.sql', import.meta.url), 'utf8'))
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)').run(now)
+    database.exec(readFileSync(new URL('../migrations/006_session_bound_routes.sql', import.meta.url), 'utf8'))
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)').run(now)
     initializeOwner(database, 'owner-a', now)
     await withOutbox(database)
 

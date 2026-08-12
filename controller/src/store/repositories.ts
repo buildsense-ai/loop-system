@@ -11,11 +11,13 @@ export function loadSnapshot(db: SqliteDatabase, ownerUid: string, workItemId: s
     workItemId: String(w.work_item_id), revision: Number(w.revision), state: w.state as WorkItemSnapshot['state'], loopId: String(w.loop_id), profileId: String(w.profile_id), terminalState: w.terminal_state as WorkItemSnapshot['terminalState'],
     taskContractHash: String(w.task_contract_hash), referenceSnapshotHash: String(w.reference_snapshot_hash), writeScope: parse<string[]>(w.write_scope_json), writeScopeHash: String(w.write_scope_hash), acceptanceContractHash: String(w.acceptance_contract_hash), githubRepo: String(w.github_repo), catscoProjectId: String(w.catsco_project_id), workerTopicId: String(w.worker_topic_id),
     ...(String(w.evidence_topic_id ?? '') ? { evidenceTopicId: String(w.evidence_topic_id) } : {}),
-    stewardTopicId: String(w.steward_topic_id), stewardPrincipal: String(w.steward_principal)
+    stewardTopicId: String(w.steward_topic_id), stewardPrincipal: String(w.steward_principal),
+    coordinatorSessionId: String(w.coordinator_session_id ?? ''), coordinatorSessionTopicId: String(w.coordinator_session_topic_id ?? '')
   }
   const attempt: AttemptSnapshot | null = a ? {
     attemptId: String(a.attempt_id), workItemId: String(a.work_item_id), workItemRevision: Number(a.work_item_revision), attemptNumber: Number(a.attempt_number), generation: Number(a.generation),
-    controlState: String(a.control_state), reportedState: String(a.reported_state), connectionState: String(a.connection_state), runtimePrincipal: String(a.runtime_principal), proofMode: a.proof_mode as AttemptSnapshot['proofMode'],
+    controlState: String(a.control_state), reportedState: String(a.reported_state), connectionState: String(a.connection_state), runtimePrincipal: String(a.runtime_principal),
+    workerSessionId: String(a.worker_session_id ?? ''), proofMode: a.proof_mode as AttemptSnapshot['proofMode'],
     ...(String(a.proof_key_id) ? { proofKeyId: String(a.proof_key_id) } : {}),
     ...(String(a.proof_public_key) ? { proofPublicKey: String(a.proof_public_key) } : {}),
     leaseExpiresAt: String(a.lease_expires_at), taskContractHash: String(a.task_contract_hash), referenceSnapshotHash: String(a.reference_snapshot_hash), writeScopeHash: String(a.write_scope_hash), acceptanceContractHash: String(a.acceptance_contract_hash), workBundle: parse(a.work_bundle_json)

@@ -18,6 +18,7 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
     const { evidenceTopicId, ...registration } = p
     const next: WorkItemSnapshot = {
       ...registration, ...(evidenceTopicId ? { evidenceTopicId } : {}),
+      coordinatorSessionId: p.coordinatorSessionId ?? '', coordinatorSessionTopicId: p.coordinatorSessionTopicId ?? '',
       stewardPrincipal: p.stewardPrincipal ?? 'steward', revision: 1, state: 'ready'
     }
     return { kind: 'commit', expectedRevision: null, nextWorkItem: next, actions: [], effects: [], receiptFields: { workItemId: p.workItemId, workItemRevision: 1 } }
@@ -45,15 +46,23 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
 
     const revision = work.revision + 1
     const nextWorkItem: WorkItemSnapshot = route
-      ? { ...work, ...route, revision, state: 'assigned' }
+      ? { ...work, catscoProjectId: route.catscoProjectId, workerTopicId: route.workerTopicId, evidenceTopicId: route.evidenceTopicId,
+          stewardTopicId: route.stewardTopicId, stewardPrincipal: route.stewardPrincipal,
+          ...(route.coordinatorSessionId ? { coordinatorSessionId: route.coordinatorSessionId } : {}),
+          ...(route.coordinatorSessionTopicId ? { coordinatorSessionTopicId: route.coordinatorSessionTopicId } : {}),
+          revision, state: 'assigned' }
       : { ...work, revision, state: 'assigned' }
+    if (route && (route.workerSessionId || route.coordinatorSessionId || route.coordinatorSessionTopicId) &&
+      (route.workerSessionId === route.coordinatorSessionId || route.coordinatorSessionTopicId !== route.stewardTopicId)) {
+      return reject('invalid_session_bound_route', work.revision)
+    }
     const requiresReadiness = Boolean(nextWorkItem.evidenceTopicId)
     const nextAttempt = { attemptId: p.attemptId, workItemId: p.workItemId, workItemRevision: revision, attemptNumber: p.attemptNumber,
       generation: p.generation, controlState: requiresReadiness ? 'preflight' : 'allocated', reportedState: 'unknown', connectionState: 'unknown', runtimePrincipal: p.runtimePrincipal,
       proofMode: p.proofMode ?? 'ed25519', ...(p.proofKeyId ? { proofKeyId: p.proofKeyId } : {}),
       ...(p.proofPublicKey ? { proofPublicKey: p.proofPublicKey } : {}), leaseExpiresAt: p.leaseExpiresAt,
       taskContractHash: p.taskContractHash, referenceSnapshotHash: p.referenceSnapshotHash, writeScopeHash: p.writeScopeHash,
-      acceptanceContractHash: p.acceptanceContractHash, workBundle: p.workBundle }
+      acceptanceContractHash: p.acceptanceContractHash, ...(route?.workerSessionId ? { workerSessionId: route.workerSessionId } : {}), workBundle: p.workBundle }
     const actionKind = requiresReadiness ? 'preflight_attempt' : 'execute_attempt'
     const action: ActionPlan = { actionId: stable('action', requiresReadiness ? 'preflight' : 'execute', p.attemptId, p.generation),
       actionKey: stable(actionKind, p.attemptId, p.generation), kind: actionKind,
@@ -154,7 +163,8 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
     if (evidenceDigest !== digestJson(evidenceBody)) return reject('trusted_evidence_digest_mismatch', work.revision)
     const revision = work.revision + 1
     const action: ActionPlan = { actionId: stable('action','review',p.attemptId,p.generation), actionKey: stable('review_candidate',p.attemptId,p.generation), kind: 'review_candidate',
-      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal, targetDigest: p.deliverable.digest, targetTopicId: work.stewardTopicId }
+      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal, targetDigest: p.deliverable.digest,
+      targetTopicId: work.coordinatorSessionTopicId || work.stewardTopicId }
     return { kind: 'commit', expectedRevision: work.revision, nextWorkItem: { ...work, revision, state: 'candidate' },
       nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'candidate_committed' },
       candidate: { candidateId: p.candidateId, attemptId: p.attemptId, generation: p.generation, workItemId: p.workItemId, workItemRevision: p.workItemRevision, deliverable: p.deliverable, evidence: event.evidence },

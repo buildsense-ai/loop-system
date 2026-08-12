@@ -153,7 +153,9 @@ Profile 的 `write_scope_upper_bound` 是权限上限；Task Contract 的 `write
 }
 ```
 
-只有同时满足当前 `attempt_id + lease_generation`、经过认证的 runtime principal 和有效 `lease_proof` 的事件能推进 Work Item。CatsCo 消息可作为唤醒或内容载体，但不能独立证明 session/body identity。
+只有同时满足当前 `attempt_id + lease_generation`、经过认证的 runtime principal、明确的 Worker Session identity 和有效 `lease_proof` 的事件能推进 Work Item。CatsCo 消息可作为唤醒或内容载体，但不能独立证明 session/body identity。
+
+一个 Agent UID 是可寻址执行资源，不是单一 Session。每个 Attempt 保存 `worker_session_id`，它绑定该 Worker Agent 收到执行包的 canonical CatsCo Topic（及其 XiaoBa `session:v2` identity）。同一 Worker Agent 的并行 Attempt 必须使用不同 execution Topic、Session、worktree 和 lease；一个 Session 的 Candidate 不能推进另一个 Session 的 Attempt。
 
 ## 6. Progress Packet
 
@@ -246,7 +248,7 @@ ACK 丢失时，Worker 使用相同 event/idempotency key 查询或重试，得�
 
 ## 8. Review Packet 与 Decision
 
-Controller 根据 Candidate 构建 Review Packet，送给 Steward Agent。
+Controller 根据 Candidate 构建 Review Packet，送给创建该 DAG 的 Coordinator/Review Agent Session。`review_candidate` 的目标是该 Coordinator Session 的 canonical return Topic，不是 Worker Topic，也不应从 Worker Agent UID 或临时 Review group 推导。Review group 可承担监督/证据面，但不是 Candidate 回传身份边界。
 
 ```json
 {

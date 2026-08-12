@@ -6,11 +6,11 @@ export interface WorkItemSnapshot {
   workItemId: string; revision: number; state: WorkState; loopId: string; profileId: string; terminalState: 'accepted' | 'closed'
   taskContractHash: string; referenceSnapshotHash: string; writeScope: string[]; writeScopeHash: string;
   acceptanceContractHash: string; githubRepo: string; catscoProjectId: string; workerTopicId: string; evidenceTopicId?: string; stewardTopicId: string;
-  stewardPrincipal: string
+  stewardPrincipal: string; coordinatorSessionId?: string; coordinatorSessionTopicId?: string
 }
 export interface AttemptSnapshot {
   attemptId: string; workItemId: string; workItemRevision: number; attemptNumber: number; generation: number;
-  controlState: string; reportedState: string; connectionState: string; runtimePrincipal: string;
+  controlState: string; reportedState: string; connectionState: string; runtimePrincipal: string; workerSessionId?: string;
   proofMode: 'ed25519' | 'catsco-message'; proofKeyId?: string; proofPublicKey?: string;
   leaseExpiresAt: string; taskContractHash: string; referenceSnapshotHash: string;
   writeScopeHash: string; acceptanceContractHash: string; workBundle: unknown

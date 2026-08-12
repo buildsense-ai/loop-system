@@ -96,21 +96,25 @@ function saveWork(
     db.prepare(`INSERT INTO work_items(
       owner_uid,work_item_id,revision,ledger_revision,state,loop_id,profile_id,terminal_state,
       task_contract_hash,reference_snapshot_hash,write_scope_json,write_scope_hash,
-      acceptance_contract_hash,github_repo,catsco_project_id,worker_topic_id,evidence_topic_id,steward_topic_id,steward_principal,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      acceptance_contract_hash,github_repo,catsco_project_id,worker_topic_id,evidence_topic_id,steward_topic_id,steward_principal,
+      coordinator_session_id,coordinator_session_topic_id,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       ownerUid, work.workItemId, work.revision, ledger, work.state, work.loopId, work.profileId,
       work.terminalState, work.taskContractHash, work.referenceSnapshotHash, canonicalize(work.writeScope),
       work.writeScopeHash, work.acceptanceContractHash, work.githubRepo, work.catscoProjectId,
-      work.workerTopicId, work.evidenceTopicId ?? '', work.stewardTopicId, work.stewardPrincipal, now
+      work.workerTopicId, work.evidenceTopicId ?? '', work.stewardTopicId, work.stewardPrincipal,
+      work.coordinatorSessionId ?? '', work.coordinatorSessionTopicId ?? '', now
     )
     return
   }
   const result = db.prepare(`UPDATE work_items SET revision=?,ledger_revision=?,state=?,catsco_project_id=?,
-    worker_topic_id=?,evidence_topic_id=?,steward_topic_id=?,steward_principal=?,updated_at=?
+    worker_topic_id=?,evidence_topic_id=?,steward_topic_id=?,steward_principal=?,
+    coordinator_session_id=?,coordinator_session_topic_id=?,updated_at=?
     WHERE owner_uid=? AND work_item_id=? AND revision=?`
   ).run(
     work.revision, ledger, work.state, work.catscoProjectId, work.workerTopicId,
-    work.evidenceTopicId ?? '', work.stewardTopicId, work.stewardPrincipal, now,
+    work.evidenceTopicId ?? '', work.stewardTopicId, work.stewardPrincipal,
+    work.coordinatorSessionId ?? '', work.coordinatorSessionTopicId ?? '', now,
     ownerUid, work.workItemId, expected
   )
   if (result.changes !== 1) throw new Error('optimistic revision conflict')
@@ -128,13 +132,13 @@ function saveAttempt(
       owner_uid,attempt_id,work_item_id,work_item_revision,attempt_number,generation,control_state,
       reported_state,connection_state,runtime_principal,proof_key_id,proof_public_key,lease_expires_at,
       task_contract_hash,reference_snapshot_hash,write_scope_hash,acceptance_contract_hash,
-      work_bundle_json,started_at,updated_at,proof_mode
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      work_bundle_json,started_at,updated_at,proof_mode,worker_session_id
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       ownerUid, attempt.attemptId, attempt.workItemId, attempt.workItemRevision, attempt.attemptNumber,
       attempt.generation, attempt.controlState, attempt.reportedState, attempt.connectionState,
       attempt.runtimePrincipal, attempt.proofKeyId ?? '', attempt.proofPublicKey ?? '', attempt.leaseExpiresAt,
       attempt.taskContractHash, attempt.referenceSnapshotHash, attempt.writeScopeHash,
-      attempt.acceptanceContractHash, canonicalize(attempt.workBundle), null, now, attempt.proofMode
+      attempt.acceptanceContractHash, canonicalize(attempt.workBundle), null, now, attempt.proofMode, attempt.workerSessionId ?? ''
     )
     return
   }
@@ -200,6 +204,7 @@ export async function processInboxRow(
       `catsco-user:${attestation.senderUid}` === attempt.runtimePrincipal &&
       (!requiresCanonicalEventBinding || (ingress.source === attempt.runtimePrincipal && ingress.entityRef === `attempt:${attempt.attemptId}`)) &&
       ingress.payload.runtimePrincipal === attempt.runtimePrincipal &&
+      (!attempt.workerSessionId || ingress.payload.workerSessionId === attempt.workerSessionId) &&
       ingress.payload.attemptId === attempt.attemptId &&
       ingress.payload.generation === attempt.generation &&
       ingress.payload.expectedRevision === work.revision && work.state === 'assigned' &&
@@ -209,6 +214,7 @@ export async function processInboxRow(
       const code = !attestation ? `${label}_unattested`
         : attestation.topicId !== evidenceTopicId ? `${label}_wrong_topic`
         : `catsco-user:${attestation.senderUid}` !== attempt?.runtimePrincipal ? `${label}_wrong_sender`
+        : attempt?.workerSessionId && ingress.payload.workerSessionId !== attempt.workerSessionId ? `${label}_wrong_session`
         : Date.parse(attestation.serverReceivedAt) > Date.parse(attempt?.leaseExpiresAt ?? '') ? `${label}_lease_expired`
         : `${label}_stale`
       return rejectInbox(db, ownerUid, String(row.inbox_id), code)

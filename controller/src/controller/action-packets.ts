@@ -11,9 +11,9 @@ function actionRow(db: SqliteDatabase, ownerUid: string, actionId: string): Row 
   const row = db.prepare(`SELECT a.*,w.state work_state,w.loop_id,w.profile_id,w.terminal_state,
     w.task_contract_hash,w.reference_snapshot_hash,w.write_scope_json,w.write_scope_hash,
     w.acceptance_contract_hash,w.github_repo,w.catsco_project_id,w.worker_topic_id,w.evidence_topic_id,
-    w.steward_topic_id,w.steward_principal,
+    w.steward_topic_id,w.steward_principal,w.coordinator_session_id,w.coordinator_session_topic_id,
     at.attempt_id,at.work_item_revision attempt_work_item_revision,at.attempt_number,at.generation,
-    at.control_state,at.reported_state,at.connection_state,at.runtime_principal,at.proof_mode,
+    at.control_state,at.reported_state,at.connection_state,at.runtime_principal,at.worker_session_id,at.proof_mode,
     at.proof_key_id,at.proof_public_key,at.lease_expires_at,at.work_bundle_json,
     c.candidate_id,c.attempt_id candidate_attempt_id,c.generation candidate_generation,
     c.deliverable_json,c.deliverable_digest,c.trusted_evidence_json
@@ -61,6 +61,7 @@ function render(row: Row): Record<string, unknown> {
       loopId: String(row.loop_id), profileId: String(row.profile_id),
       workerTopicId: String(row.worker_topic_id),
       ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
+      ...(String(row.worker_session_id ?? '') ? { workerSessionId: String(row.worker_session_id) } : {}),
       githubRepo: String(row.github_repo),
       writeScope: json(row.write_scope_json),
       attemptId: String(row.attempt_id), attemptNumber: Number(row.attempt_number), generation: Number(row.generation),
@@ -98,6 +99,8 @@ function render(row: Row): Record<string, unknown> {
       loopId: String(row.loop_id), profileId: String(row.profile_id), githubRepo: String(row.github_repo),
       stewardPrincipal: String(row.steward_principal),
       stewardTopicId: String(row.steward_topic_id),
+      ...(String(row.coordinator_session_id ?? '') ? { coordinatorSessionId: String(row.coordinator_session_id) } : {}),
+      ...(String(row.coordinator_session_topic_id ?? '') ? { coordinatorSessionTopicId: String(row.coordinator_session_topic_id) } : {}),
       ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
       acceptanceContractHash: String(row.acceptance_contract_hash), candidate
     }

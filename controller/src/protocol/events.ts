@@ -17,7 +17,7 @@ export type Deliverable = z.infer<typeof deliverableSchema>
 
 export const candidatePacketSchema = z.object({
   ownerUid: id, workItemId: id, workItemRevision: z.number().int().positive(), attemptId: id,
-  generation: z.number().int().nonnegative(), runtimePrincipal: id,
+  generation: z.number().int().nonnegative(), runtimePrincipal: id, workerSessionId: id.optional(),
   candidateId: id, deliverable: deliverableSchema, ...contracts,
   proofMode: z.enum(['ed25519', 'catsco-message']).optional(), signature: id.optional()
 }).strict().superRefine((packet, context) => {
@@ -34,7 +34,7 @@ export type CandidatePacket = z.infer<typeof candidatePacketSchema>
 const workItemRegistered = z.object({ ...base, type: z.literal('work_item_registered'), payload: z.object({
   workItemId: id, loopId: id, profileId: id, terminalState: z.enum(['accepted', 'closed']), ...contracts,
   writeScope: z.array(id), githubRepo: id, catscoProjectId: id, workerTopicId: id, evidenceTopicId: id.optional(), stewardTopicId: id,
-  stewardPrincipal: id.optional()
+  stewardPrincipal: id.optional(), coordinatorSessionId: id.optional(), coordinatorSessionTopicId: id.optional()
 }).strict() }).strict().superRefine((event, context) => {
   const p = event.payload
   if (!p.evidenceTopicId) return
@@ -46,8 +46,12 @@ const workItemRegistered = z.object({ ...base, type: z.literal('work_item_regist
   }
 })
 const attemptRouteSchema = z.object({
-  catscoProjectId: id, workerTopicId: id, evidenceTopicId: id, stewardTopicId: id, stewardPrincipal: id
-}).strict()
+  catscoProjectId: id, workerTopicId: id, evidenceTopicId: id, stewardTopicId: id, stewardPrincipal: id,
+  workerSessionId: id.optional(), coordinatorSessionId: id.optional(), coordinatorSessionTopicId: id.optional()
+}).strict().superRefine((route, context) => {
+  const values = [route.workerSessionId, route.coordinatorSessionId, route.coordinatorSessionTopicId]
+  if (values.some(Boolean) && values.some(value => !value)) context.addIssue({ code: 'custom', message: 'session-bound routes require worker and coordinator session identity' })
+})
 const workBundlePayload = z.object({
   workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id,
   attemptNumber: z.number().int().positive(), generation: z.number().int().nonnegative(),
@@ -67,11 +71,11 @@ const workBundlePayload = z.object({
 const workBundleProposed = z.object({ ...base, type: z.literal('work_bundle_proposed'), payload: workBundlePayload }).strict()
 const workerReady = z.object({ ...base, type: z.literal('worker_ready'), payload: z.object({
   workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative(),
-  runtimePrincipal: id, signature: id
+  runtimePrincipal: id, workerSessionId: id.optional(), signature: id
 }).strict() }).strict()
 const runtimeStarted = z.object({ ...base, type: z.literal('runtime_started'), payload: z.object({
   workItemId: id, expectedRevision: z.number().int().positive(), attemptId: id, generation: z.number().int().nonnegative(),
-  runtimePrincipal: id, signature: id
+  runtimePrincipal: id, workerSessionId: id.optional(), signature: id
 }).strict() }).strict()
 const progress = z.object({ ...base, type: z.literal('runtime_progress_observed'), payload: z.object({ workItemId: id, attemptId: id, reportedState: id }).strict() }).strict()
 const connection = z.object({ ...base, type: z.literal('runtime_connection_observed'), payload: z.object({ workItemId: id, attemptId: id, connectionState: z.enum(['connected','disconnected','unknown']) }).strict() }).strict()

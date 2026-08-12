@@ -30,6 +30,9 @@ export async function validateCandidate(db: SqliteDatabase, ownerUid: string, ro
   const evidenceBody = { repository: observed.repository, prNumber: observed.prNumber, headSha: observed.headSha,
     baseSha: observed.baseSha, changedPaths: [...observed.changedPaths].sort() }
   const evidence: TrustedEvidence={...evidenceBody,digest:digestJson(evidenceBody)}
+  if (attempt.workerSessionId && event.payload.workerSessionId !== attempt.workerSessionId) {
+    throw new CandidateRejection('candidate_wrong_session')
+  }
   const validation={kind:'candidate_validated',evidence,evidenceDigest:evidence.digest}
   db.prepare(`UPDATE inbox SET validation_receipt_json=? WHERE owner_uid=? AND inbox_id=? AND status='pending' AND validation_receipt_json IS NULL`).run(canonicalize(validation),ownerUid,row.inbox_id)
   return { type:'candidate_validated',eventId:event.eventId,ingressSequence:Number(row.ingress_sequence),trustedIngressAt:String(row.trusted_ingress_at),payload:event.payload,evidence }
