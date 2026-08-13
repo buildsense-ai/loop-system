@@ -75,6 +75,7 @@ describe('adapter health', () => {
   it.each([
     ['timeout', new ProcessFailure('opencli timed out'), 'opencli_timeout'],
     ['navigation rejection', new ProcessFailure('opencli exited 1', { stderr: 'Pre-navigation to https://app.catsco.cc/ failed: Navigation rejected.' }), 'opencli_navigation_rejected'],
+    ['required login', new ProcessFailure('opencli exited 1', { stderr: 'CatsCo requires a logged-in session — open app.catsco.cc in Chrome and sign in.' }), 'opencli_auth_required'],
     ['nonzero command', new ProcessFailure('opencli exited 1', { stderr: 'server unavailable' }), 'opencli_command_failed'],
     ['malformed output', new SyntaxError('Unexpected token < in JSON at position 0'), 'opencli_malformed_output']
   ])('classifies OpenCLI %s failures', async (_name, error, classification) => {

@@ -13,6 +13,7 @@ export type AdapterHealthClassification =
   | 'owner_mismatch'
   | 'opencli_timeout'
   | 'opencli_navigation_rejected'
+  | 'opencli_auth_required'
   | 'opencli_command_failed'
   | 'opencli_malformed_output'
   | 'opencli_error'
@@ -49,6 +50,7 @@ function classify(error: unknown): AdapterHealthClassification {
   const message = detail(error).toLowerCase()
   if (message.includes('timed out')) return 'opencli_timeout'
   if (message.includes('navigation rejected')) return 'opencli_navigation_rejected'
+  if (message.includes('requires a logged-in session') || message.includes('sign in')) return 'opencli_auth_required'
   if (errors.some(value => value instanceof ZodError || value instanceof SyntaxError)) return 'opencli_malformed_output'
   if (errors.some(value => value instanceof ProcessFailure)) return 'opencli_command_failed'
   return 'opencli_error'
