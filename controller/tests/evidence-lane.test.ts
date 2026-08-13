@@ -44,19 +44,21 @@ function event(type: string, key: string, payload: unknown) {
   return { type, eventId: `event-${key}`, idempotencyKey: key, source: 'catsco-user:559', entityRef: 'work_item:wi-1', payload }
 }
 
-function registration() {
+function registration(coordinatorSessionTopicId?: string) {
   return event('work_item_registered', 'register', {
     workItemId: 'wi-1', loopId: 'loop-1', profileId: 'product@1', terminalState: 'accepted', ...hashes,
     writeScope: ['src/**'], githubRepo: 'acme/repo', catscoProjectId: '41',
-    workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574'
+    workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574',
+    ...(coordinatorSessionTopicId ? { coordinatorSessionId: `session:v2:catscompany:p2p:${coordinatorSessionTopicId}:agent:574`, coordinatorSessionTopicId } : {})
   })
 }
 
-function bundle() {
+function bundle(attemptRoute?: Record<string, string>) {
   return event('work_bundle_proposed', 'bundle', {
     workItemId: 'wi-1', expectedRevision: 1, attemptId: 'attempt-1', attemptNumber: 1, generation: 1,
     runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', leaseExpiresAt: '2026-08-05T00:00:00.000Z',
-    workBundle: { contractDigest: 'bundle-digest', instructions: 'bounded work', deliverables: ['pull request'] }, ...hashes
+    workBundle: { contractDigest: 'bundle-digest', instructions: 'bounded work', deliverables: ['pull request'] },
+    ...(attemptRoute ? { attemptRoute } : {}), ...hashes
   })
 }
 
@@ -125,6 +127,25 @@ describe('quiet evidence lanes', () => {
     db.close()
   })
 
+  it('accepts a Coordinator P2P session distinct from the review group and rejects execution/evidence aliases', async () => {
+    const route = {
+      catscoProjectId: '41', workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574',
+      workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    }
+    const db = database()
+    ingest(db, 'owner-a', registration('p2p_574_602'), providers)
+    ingest(db, 'owner-a', bundle(route), { ...providers, id: (prefix: string) => `route-${prefix}` })
+    expect((await processPending(db, 'owner-a', processingAdapters)).at(-1)).toMatchObject({ status: 'committed' })
+
+    const invalid = { ...route, coordinatorSessionTopicId: 'grp_102' }
+    const rejected = database()
+    ingest(rejected, 'owner-a', registration('grp_102'), { ...providers, id: (prefix: string) => `rejected-register-${prefix}` })
+    ingest(rejected, 'owner-a', { ...bundle(invalid), eventId: 'event-invalid-route', idempotencyKey: 'invalid-route' }, { ...providers, id: (prefix: string) => `rejected-route-${prefix}` })
+    expect((await processPending(rejected, 'owner-a', processingAdapters)).at(-1)).toMatchObject({ status: 'rejected', rejectionCode: 'invalid_session_bound_route' })
+    db.close()
+    rejected.close()
+  })
+
   it('uses a receipt-attested readiness gate before dispatching the execution Action', async () => {
     const db = database()
     ingest(db, 'owner-a', registration(), providers)
@@ -186,9 +207,12 @@ describe('quiet evidence lanes', () => {
     db.close()
   })
 
-  it('polls only evidence topics and fences a no-start execution before issuing exactly one recovery Action', async () => {
+  it.each([
+    ['legacy', undefined, 'grp_103'],
+    ['session-bound', 'p2p_574_602', 'p2p_574_602']
+  ])('polls only evidence topics and fences a no-start execution before issuing exactly one %s recovery Action', async (_route, coordinatorSessionTopicId, expectedTargetTopicId) => {
     const db = database()
-    ingest(db, 'owner-a', registration(), providers)
+    ingest(db, 'owner-a', registration(coordinatorSessionTopicId), providers)
     ingest(db, 'owner-a', bundle(), { ...providers, id: prefix => `${prefix}-bundle` })
     await processPending(db, 'owner-a', processingAdapters)
     const catsco = new FakeCatsco()
@@ -211,7 +235,7 @@ describe('quiet evidence lanes', () => {
       attempt: { controlState: 'superseded', reportedState: 'runtime_start_timeout', connectionState: 'disconnected' }
     })
     expect(db.prepare("SELECT kind,state,target_topic_id FROM actions WHERE kind='recover_attempt'").all()).toEqual([
-      { kind: 'recover_attempt', state: 'ready', target_topic_id: 'grp_103' }
+      { kind: 'recover_attempt', state: 'ready', target_topic_id: expectedTargetTopicId }
     ])
 
     ingest(db, 'owner-a', recoveryBundle(false), { ...providers, id: prefix => `${prefix}-recovery-missing-route` })

@@ -39,10 +39,11 @@ afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, for
 const envelope = (type: string, key: string, payload: unknown) => ({
   type, eventId: `event-${key}`, idempotencyKey: key, source: 'test', entityRef: 'work_item:wi-1', payload
 })
-const registration = (key = 'register', terminalState: 'accepted' | 'closed' = 'accepted', workItemId = 'wi-1') => envelope('work_item_registered', key, {
+const registration = (key = 'register', terminalState: 'accepted' | 'closed' = 'accepted', workItemId = 'wi-1', coordinatorSessionTopicId?: string) => envelope('work_item_registered', key, {
   workItemId, loopId: 'loop-1', profileId: 'product@1', terminalState, ...hashes,
   writeScope: ['src/**', 'tests/**'], githubRepo: 'acme/repo', catscoProjectId: 'project-1',
-  workerTopicId: 'worker-topic', stewardTopicId: 'steward-topic'
+  workerTopicId: 'worker-topic', stewardTopicId: 'steward-topic',
+  ...(coordinatorSessionTopicId ? { coordinatorSessionId: `session:v2:catscompany:p2p:${coordinatorSessionTopicId}:agent:steward`, coordinatorSessionTopicId } : {})
 })
 const bundle = (expectedRevision = 1, generation = 1, attemptId = `attempt-${generation}`, key = `bundle-${generation}`) =>
   envelope('work_bundle_proposed', key, {
@@ -96,16 +97,16 @@ const reviewDecision = (outcome: 'accepted' | 'changes_requested', key: string, 
   })
 
 async function process(db: SqliteDatabase, owner = 'owner-a', selected = adapters) { return processPending(db, owner, selected) }
-async function reachInProgress(db: SqliteDatabase, terminalState: 'accepted' | 'closed' = 'accepted') {
-  ingest(db, 'owner-a', registration('register', terminalState), providers)
+async function reachInProgress(db: SqliteDatabase, terminalState: 'accepted' | 'closed' = 'accepted', coordinatorSessionTopicId?: string) {
+  ingest(db, 'owner-a', registration('register', terminalState, 'wi-1', coordinatorSessionTopicId), providers)
   ingest(db, 'owner-a', bundle(), { ...providers, id: prefix => `${prefix}-bundle` })
   ingest(db, 'owner-a', started(), { ...providers, id: prefix => `${prefix}-started` }, {
     topicId: 'worker-topic', seqId: '1', senderUid: '1', serverReceivedAt: later
   })
   await process(db)
 }
-async function reachCandidate(db: SqliteDatabase, terminalState: 'accepted' | 'closed' = 'accepted') {
-  await reachInProgress(db, terminalState)
+async function reachCandidate(db: SqliteDatabase, terminalState: 'accepted' | 'closed' = 'accepted', coordinatorSessionTopicId?: string) {
+  await reachInProgress(db, terminalState, coordinatorSessionTopicId)
   ingest(db, 'owner-a', candidate(), { ...providers, id: prefix => `${prefix}-candidate` })
   await process(db)
 }
@@ -412,6 +413,18 @@ it('supports changes requested then a fenced new work bundle', async () => {
   db.close()
 })
 
+it.each([
+  ['legacy', undefined, 'steward-topic'],
+  ['session-bound', 'p2p_574_602', 'p2p_574_602']
+])('routes accepted-terminal plan_next to the %s Coordinator target', async (_route, coordinatorSessionTopicId, expectedTargetTopicId) => {
+  const { db } = database()
+  await reachCandidate(db, 'accepted', coordinatorSessionTopicId)
+  ingest(db, 'owner-a', reviewDecision('accepted', `review-accepted-${_route}`), { ...providers, id: prefix => `${prefix}-review` })
+  await process(db)
+  expect(db.prepare("SELECT target_topic_id FROM actions WHERE kind='plan_next'").all()).toEqual([{ target_topic_id: expectedTargetTopicId }])
+  db.close()
+})
+
 it('creates plan_next once only after terminal acceptance', async () => {
   const { db } = database()
   await reachCandidate(db)
@@ -425,9 +438,12 @@ it('creates plan_next once only after terminal acceptance', async () => {
   db.close()
 })
 
-it('waits for exact-head merged close before plan_next for closed-terminal profiles', async () => {
+it.each([
+  ['legacy', undefined, 'steward-topic'],
+  ['session-bound', 'p2p_574_602', 'p2p_574_602']
+])('waits for exact-head merged close before plan_next for %s closed-terminal profiles', async (_route, coordinatorSessionTopicId, expectedTargetTopicId) => {
   const { db } = database()
-  await reachCandidate(db, 'closed')
+  await reachCandidate(db, 'closed', coordinatorSessionTopicId)
   ingest(db, 'owner-a', reviewDecision('accepted', 'review-accepted-closed'), {
     ...providers, id: prefix => `${prefix}-closed-review`
   })
@@ -453,7 +469,9 @@ it('waits for exact-head merged close before plan_next for closed-terminal profi
   })
   await process(db, 'owner-a', fakeAdapters({ state: 'closed', merged: true }))
   expect(loadSnapshot(db, 'owner-a', 'wi-1').workItem?.state).toBe('closed')
-  expect(db.prepare("SELECT count(*) count FROM actions WHERE kind='plan_next'").get()).toEqual({ count: 1 })
+  expect(db.prepare("SELECT kind,state,target_topic_id FROM actions WHERE kind='plan_next'").all()).toEqual([
+    { kind: 'plan_next', state: 'ready', target_topic_id: expectedTargetTopicId }
+  ])
   db.close()
 })
 

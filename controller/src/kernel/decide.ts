@@ -52,8 +52,9 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
           ...(route.coordinatorSessionTopicId ? { coordinatorSessionTopicId: route.coordinatorSessionTopicId } : {}),
           revision, state: 'assigned' }
       : { ...work, revision, state: 'assigned' }
-    if (route && (route.workerSessionId || route.coordinatorSessionId || route.coordinatorSessionTopicId) &&
-      (route.workerSessionId === route.coordinatorSessionId || route.coordinatorSessionTopicId !== route.stewardTopicId)) {
+    const hasSessionRoute = Boolean(route?.workerSessionId || route?.coordinatorSessionId || route?.coordinatorSessionTopicId)
+    if (route && hasSessionRoute && (!route.workerSessionId || !route.coordinatorSessionId || !route.coordinatorSessionTopicId ||
+      route.workerSessionId === route.coordinatorSessionId || [route.workerTopicId, route.evidenceTopicId].includes(route.coordinatorSessionTopicId))) {
       return reject('invalid_session_bound_route', work.revision)
     }
     const requiresReadiness = Boolean(nextWorkItem.evidenceTopicId)
@@ -123,7 +124,7 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
       actionKey: stable('recover_attempt',attempt.attemptId,attempt.generation), kind: 'recover_attempt',
       workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal,
       targetDigest: digestJson({ workItemId: work.workItemId, attemptId: attempt.attemptId, generation: attempt.generation, reason, revision }),
-      targetTopicId: work.stewardTopicId
+      targetTopicId: work.coordinatorSessionTopicId || work.stewardTopicId
     }
     return { kind: 'commit', expectedRevision: work.revision,
       nextWorkItem: { ...work, revision, state: 'ready' },
@@ -191,7 +192,7 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
       nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'accepted' }, actions: [], effects: [],
       receiptFields: { workItemId: work.workItemId, workItemRevision: revision } }
     const action: ActionPlan = { actionId: stable('action','plan_next',work.workItemId,revision), actionKey: stable('plan_next',work.workItemId,revision), kind: 'plan_next',
-      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal, targetDigest: decisionBinding, targetTopicId: work.stewardTopicId }
+      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal, targetDigest: decisionBinding, targetTopicId: work.coordinatorSessionTopicId || work.stewardTopicId }
     return { kind: 'commit', expectedRevision: work.revision, nextWorkItem, nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'accepted' },
       actions: [action], effects: [wake(action)], receiptFields: { workItemId: work.workItemId, workItemRevision: revision, actionIds: [action.actionId] } }
   }
@@ -209,7 +210,7 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
       deliverableDigest: p.deliverableDigest, acceptanceContractHash: p.acceptanceContractHash,
       observationRef: p.observationRef, readbackDigest: event.readbackDigest })
     const action: ActionPlan = { actionId: stable('action','plan_next',work.workItemId,revision), actionKey: stable('plan_next',work.workItemId,revision), kind: 'plan_next',
-      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal, targetDigest: closeBinding, targetTopicId: work.stewardTopicId }
+      workItemId: work.workItemId, workItemRevision: revision, targetPrincipal: work.stewardPrincipal, targetDigest: closeBinding, targetTopicId: work.coordinatorSessionTopicId || work.stewardTopicId }
     return { kind: 'commit', expectedRevision: work.revision, nextWorkItem: { ...work, revision, state: 'closed' },
       nextAttempt: { ...attempt, workItemRevision: revision, controlState: 'closed' }, actions: [action], effects: [wake(action)],
       receiptFields: { workItemId: work.workItemId, workItemRevision: revision, actionIds: [action.actionId] } }
