@@ -19,7 +19,7 @@ Implemented:
 - explicit, durable runtime proof modes: default Ed25519 or trusted CatsCo-message attestation, plus read-only `gh api` PR evidence;
 - trusted CatsCo envelope attestations (`topicId`, `seqId`, `senderUid`, `serverReceivedAt`) stored separately from message-controlled JSON;
 - stored Steward principal/topic authorization for attested CatsCo review decisions;
-- CLI commands: `init`, `ingest`, `tick`, `status`, `receipt`, `reconcile`, `doctor`, and local-only `local-pilot`.
+- CLI commands: `init`, `ingest`, `tick`, `status`, `receipt`, `reconcile`, `doctor`, `adapter-health`, and local-only `local-pilot`.
 
 Explicitly unavailable:
 
@@ -96,7 +96,8 @@ This proves **only the local controller pipeline**: real migrations, durable ing
 
 ## CLI workflow
 
-An authenticated CatsCo browser/OpenCLI session is required for `init`, `doctor`, stateful commands, attempted effects, and reconciliation. Changing the authenticated user selects that user's isolated `catsco/<owner_uid>/loop.db` under the same state root; it does not read or mutate another user's namespace. Reconciliation calls `catsco me` once, verifies the authenticated UID before polling or cursor changes, then deduplicates active topics. New evidence-lane Work Items poll **only** their quiet `evidence_topic_id`; legacy Work Items retain Worker/Steward fallback polling. Each topic has one durable seq cursor, advanced only after durable attested ingest. New Attempts first dispatch a receipt-confirmed `preflight_attempt`; only an attested `worker_ready` on the evidence lane creates `execute_attempt`. After a server-confirmed execution send, the Controller applies a bounded runtime-start watchdog (default 90 seconds, configurable with `LOOPCTL_RUNTIME_START_TIMEOUT_MS`). A missing startup or readiness receipt atomically supersedes the generation, fences late events, returns the Work Item to `ready`, and creates exactly one `recover_attempt`; it never fabricates runtime execution or silently resends the old Action. Recovery requires a fresh route and worktree contract in the next bundle. Ambient `gh` authentication is required for Candidate, review, and merge/close readback. Unattested review authority remains deliberately unavailable by default.
+Before a service unit invokes a semantic command (`reconcile --drive` or `tick`), run `loopctl adapter-health`. It makes one read-only `opencli catsco me` call, verifies the authenticated owner matches the configured namespace, prints structured JSON, and exits nonzero for timeout, navigation rejection, OpenCLI command failure, malformed output, or owner mismatch. It does not open or mutate the Loop database.
+
 
 ```bash
 # Production: pin one absolute root for every CLI and service invocation.
