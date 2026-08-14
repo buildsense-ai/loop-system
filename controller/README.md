@@ -96,7 +96,7 @@ This proves **only the local controller pipeline**: real migrations, durable ing
 
 ## CLI workflow
 
-Before a service unit invokes a semantic command (`reconcile --drive` or `tick`), run `loopctl adapter-health`. It makes one read-only `opencli catsco me` call, verifies the authenticated owner matches the configured namespace, prints structured JSON, and exits nonzero for timeout, navigation rejection, OpenCLI command failure, malformed output, or owner mismatch. It does not open or mutate the Loop database.
+Before a service unit invokes a semantic command (`reconcile --drive` or `tick`), run `loopctl adapter-health`. It makes one read-only `opencli catsco me` call, verifies the authenticated owner matches the configured namespace, prints structured JSON, and exits nonzero for timeout, navigation rejection, OpenCLI command failure, malformed output, or owner mismatch. It does not open or mutate the Loop database. Optional config fields add strictly read-only probes: `healthPollTopicId` plus optional `healthPollAfterSeq` calls `catsco messages`, and `healthReceiptTopicId` plus `healthReceiptClientMsgId` calls `catsco message-receipt`. Both receipt fields are required together. The JSON `stages` array identifies identity, poll, and receipt outcomes; malformed optional results fail closed. Leave all probe fields unset to retain identity-only behavior.
 
 
 ```bash

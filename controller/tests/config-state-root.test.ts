@@ -19,6 +19,18 @@ describe('production state-root policy', () => {
     await expect(loadConfig(selected)).rejects.toThrow(/refusing split Ledger state/)
   })
 
+  it('requires paired receipt probe configuration', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'loopctl-health-config-')); roots.push(root)
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ ownerUid: '602', stateRoot: root, healthReceiptTopicId: 'grp_101' }))
+    await expect(loadConfig(root)).rejects.toThrow(/requires both topic and client message id/)
+  })
+
+  it('requires a poll topic when a poll cursor is configured', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'loopctl-health-config-')); roots.push(root)
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ ownerUid: '602', stateRoot: root, healthPollAfterSeq: 10 }))
+    await expect(loadConfig(root)).rejects.toThrow(/health poll cursor requires a topic id/)
+  })
+
   it('requires the configured root to equal the production root when pinned', async () => {
     const root = mkdtempSync(join(tmpdir(), 'loopctl-production-')); roots.push(root)
     process.env.LOOPCTL_REQUIRED_STATE_ROOT = root

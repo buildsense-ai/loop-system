@@ -3,7 +3,19 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { z } from 'zod'
 
-const configSchema = z.object({ ownerUid: z.string().min(1), stateRoot: z.string().min(1), opencliCommand: z.string().min(1).default('opencli'), ghCommand: z.string().min(1).default('gh') }).strict()
+const configSchema = z.object({
+  ownerUid: z.string().min(1), stateRoot: z.string().min(1), opencliCommand: z.string().min(1).default('opencli'), ghCommand: z.string().min(1).default('gh'),
+  healthPollTopicId: z.string().min(1).optional(), healthPollAfterSeq: z.number().int().nonnegative().optional(),
+  healthReceiptTopicId: z.string().min(1).optional(), healthReceiptClientMsgId: z.string().min(1).optional()
+}).strict().superRefine((config, context) => {
+  const receiptConfigured = Boolean(config.healthReceiptTopicId) || Boolean(config.healthReceiptClientMsgId)
+  if (receiptConfigured && (!config.healthReceiptTopicId || !config.healthReceiptClientMsgId)) {
+    context.addIssue({ code: 'custom', path: ['healthReceiptTopicId'], message: 'health receipt probe requires both topic and client message id' })
+  }
+  if (config.healthPollAfterSeq !== undefined && !config.healthPollTopicId) {
+    context.addIssue({ code: 'custom', path: ['healthPollAfterSeq'], message: 'health poll cursor requires a topic id' })
+  }
+})
 export type LoopConfig = z.infer<typeof configSchema>
 export const defaultStateRoot = () => resolve(process.env.LOOPCTL_STATE_ROOT ?? join(homedir(), '.local', 'state', 'loopctl'))
 export const requiredStateRoot = () => {
