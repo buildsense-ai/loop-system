@@ -162,6 +162,9 @@ describe('quiet evidence lanes', () => {
     })
     expect((await processPending(db, 'owner-a', processingAdapters)).at(-1)).toMatchObject({ status: 'rejected', rejectionCode: 'worker_ready_before_preflight_receipt' })
 
+    const preflightEffect = JSON.parse(String((db.prepare("SELECT payload_json FROM outbox WHERE action_id='action:preflight:attempt-1:1'").get() as { payload_json: string }).payload_json))
+    expect(JSON.parse(preflightEffect.renderedContent)).toMatchObject({ kind: 'preflight_attempt', ownerUid: 'owner-a' })
+
     const catsco = new FakeCatsco()
     const preflightSentAt = '2026-08-04T00:00:01.000Z'
     await runOutbox(db, 'owner-a', { catsco }, 10, { now: () => preflightSentAt, token: () => 'claim-preflight' })
@@ -184,6 +187,8 @@ describe('quiet evidence lanes', () => {
       { kind: 'execute_attempt', state: 'ready', target_topic_id: 'grp_101' },
       { kind: 'preflight_attempt', state: 'satisfied', target_topic_id: 'grp_101' }
     ])
+    const executeEffect = JSON.parse(String((db.prepare("SELECT payload_json FROM outbox WHERE action_id='action:execute:attempt-1:1'").get() as { payload_json: string }).payload_json))
+    expect(JSON.parse(executeEffect.renderedContent)).toMatchObject({ kind: 'execute_attempt', ownerUid: 'owner-a' })
     db.close()
   })
 

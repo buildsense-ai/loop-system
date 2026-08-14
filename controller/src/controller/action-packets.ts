@@ -53,11 +53,12 @@ function common(row: Row) {
   }
 }
 
-function render(row: Row): Record<string, unknown> {
+function render(row: Row, ownerUid: string): Record<string, unknown> {
   const base = common(row)
   if (row.kind === 'preflight_attempt' || row.kind === 'execute_attempt') {
     const packet = {
       kind: String(row.kind), schema: ACTION_PACKET_SCHEMA, ...base,
+      ownerUid,
       loopId: String(row.loop_id), profileId: String(row.profile_id),
       workerTopicId: String(row.worker_topic_id),
       ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
@@ -120,7 +121,7 @@ function render(row: Row): Record<string, unknown> {
 }
 
 export function renderActionPacket(db: SqliteDatabase, ownerUid: string, actionId: string): string {
-  return canonicalize(render(actionRow(db, ownerUid, actionId)))
+  return canonicalize(render(actionRow(db, ownerUid, actionId), ownerUid))
 }
 
 export function actionPacket(db: SqliteDatabase, ownerUid: string, actionId: string): Record<string, unknown> {
