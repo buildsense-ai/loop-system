@@ -35,8 +35,17 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
       if (p[key] !== work[key]) return reject('contract_binding_mismatch', work.revision)
 
     const mustReplaceRoute = snapshot.attempt?.controlState === 'superseded'
-    if (mustReplaceRoute && !p.attemptRoute) return reject('recovery_route_required', work.revision)
     const route = p.attemptRoute
+    const hasCompleteSessionRoute = Boolean(
+      route?.workerSessionId && route.coordinatorSessionId && route.coordinatorSessionTopicId
+    )
+    const invalidSessionRoute = !route || !hasCompleteSessionRoute ||
+      route.workerSessionId === route.coordinatorSessionId ||
+      [route.workerTopicId, route.evidenceTopicId].includes(route.coordinatorSessionTopicId ?? '')
+    if ((p.proofMode ?? 'ed25519') === 'catsco-message' && invalidSessionRoute) {
+      return reject('invalid_session_bound_route', work.revision)
+    }
+    if (mustReplaceRoute && !route) return reject('recovery_route_required', work.revision)
     if (route && new Set([route.workerTopicId, route.evidenceTopicId, route.stewardTopicId]).size !== 3) {
       return reject('attempt_route_topics_must_be_distinct', work.revision)
     }
@@ -52,11 +61,6 @@ export function decide(snapshot: KernelSnapshot, event: KernelEvent): Transition
           ...(route.coordinatorSessionTopicId ? { coordinatorSessionTopicId: route.coordinatorSessionTopicId } : {}),
           revision, state: 'assigned' }
       : { ...work, revision, state: 'assigned' }
-    const hasSessionRoute = Boolean(route?.workerSessionId || route?.coordinatorSessionId || route?.coordinatorSessionTopicId)
-    if (route && hasSessionRoute && (!route.workerSessionId || !route.coordinatorSessionId || !route.coordinatorSessionTopicId ||
-      route.workerSessionId === route.coordinatorSessionId || [route.workerTopicId, route.evidenceTopicId].includes(route.coordinatorSessionTopicId))) {
-      return reject('invalid_session_bound_route', work.revision)
-    }
     const requiresReadiness = Boolean(nextWorkItem.evidenceTopicId)
     const nextAttempt = { attemptId: p.attemptId, workItemId: p.workItemId, workItemRevision: revision, attemptNumber: p.attemptNumber,
       generation: p.generation, controlState: requiresReadiness ? 'preflight' : 'allocated', reportedState: 'unknown', connectionState: 'unknown', runtimePrincipal: p.runtimePrincipal,

@@ -8,6 +8,7 @@ import { ingest, type Providers } from '../src/controller/ingest.js'
 import { processPending, type ProcessingAdapters } from '../src/controller/process-inbox.js'
 import { reconcile } from '../src/controller/reconcile.js'
 import { runOutbox } from '../src/controller/outbox.js'
+import { actionPacket } from '../src/controller/action-packets.js'
 import { loadSnapshot } from '../src/store/repositories.js'
 import type { CatscoAdapter, CatscoMessageReceipt, CatscoPollResult, CatscoSendRequest } from '../src/adapters/catsco.js'
 import { sha256 } from '../src/lib/digest.js'
@@ -44,7 +45,7 @@ function event(type: string, key: string, payload: unknown) {
   return { type, eventId: `event-${key}`, idempotencyKey: key, source: 'catsco-user:559', entityRef: 'work_item:wi-1', payload }
 }
 
-function registration(coordinatorSessionTopicId?: string) {
+function registration(coordinatorSessionTopicId = 'p2p_574_602') {
   return event('work_item_registered', 'register', {
     workItemId: 'wi-1', loopId: 'loop-1', profileId: 'product@1', terminalState: 'accepted', ...hashes,
     writeScope: ['src/**'], githubRepo: 'acme/repo', catscoProjectId: '41',
@@ -53,7 +54,10 @@ function registration(coordinatorSessionTopicId?: string) {
   })
 }
 
-function bundle(attemptRoute?: Record<string, string>) {
+function bundle(attemptRoute: unknown = {
+  catscoProjectId: '41', workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574',
+  workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+}) {
   return event('work_bundle_proposed', 'bundle', {
     workItemId: 'wi-1', expectedRevision: 1, attemptId: 'attempt-1', attemptNumber: 1, generation: 1,
     runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', leaseExpiresAt: '2026-08-05T00:00:00.000Z',
@@ -65,7 +69,8 @@ function bundle(attemptRoute?: Record<string, string>) {
 function permutedRecoveryBundle() {
   const event = recoveryBundle()
   return { ...event, eventId: 'event-recovery-permuted', idempotencyKey: 'recovery-permuted', payload: { ...event.payload, attemptRoute: {
-    catscoProjectId: '41', workerTopicId: 'grp_102', evidenceTopicId: 'grp_103', stewardTopicId: 'grp_101', stewardPrincipal: 'catsco-user:574'
+    catscoProjectId: '41', workerTopicId: 'grp_102', evidenceTopicId: 'grp_103', stewardTopicId: 'grp_101', stewardPrincipal: 'catsco-user:574',
+    workerSessionId: 'session:v2:catscompany:group:grp_102:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
   } } }
 }
 
@@ -74,7 +79,10 @@ function recoveryBundle(withRoute = true) {
     workItemId: 'wi-1', expectedRevision: 4, attemptId: 'attempt-2', attemptNumber: 2, generation: 2,
     runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', leaseExpiresAt: '2026-08-06T00:00:00.000Z',
     workBundle: { contractDigest: 'bundle-digest-2', instructions: 'bounded retry', deliverables: ['pull request'] },
-    ...(withRoute ? { attemptRoute: { catscoProjectId: '41', workerTopicId: 'grp_201', evidenceTopicId: 'grp_202', stewardTopicId: 'grp_203', stewardPrincipal: 'catsco-user:574' } } : {}),
+    ...(withRoute ? { attemptRoute: {
+      catscoProjectId: '41', workerTopicId: 'grp_201', evidenceTopicId: 'grp_202', stewardTopicId: 'grp_203', stewardPrincipal: 'catsco-user:574',
+      workerSessionId: 'session:v2:catscompany:group:grp_201:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    } } : {}),
     ...hashes
   })
 }
@@ -84,7 +92,7 @@ function ready() {
     type: 'worker_ready', eventId: 'event-ready', idempotencyKey: 'ready', source: 'catsco-user:559', entityRef: 'attempt:attempt-1',
     payload: {
       workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
-      runtimePrincipal: 'catsco-user:559', signature: 'catsco-message-attested'
+      runtimePrincipal: 'catsco-user:559', workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', signature: 'catsco-message-attested'
     }
   }
 }
@@ -94,7 +102,7 @@ function started() {
     type: 'runtime_started', eventId: 'event-started', idempotencyKey: 'started', source: 'catsco-user:559', entityRef: 'attempt:attempt-1',
     payload: {
       workItemId: 'wi-1', expectedRevision: 3, attemptId: 'attempt-1', generation: 1,
-      runtimePrincipal: 'catsco-user:559', signature: 'catsco-message-attested'
+      runtimePrincipal: 'catsco-user:559', workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', signature: 'catsco-message-attested'
     }
   }
 }
@@ -146,10 +154,56 @@ describe('quiet evidence lanes', () => {
     rejected.close()
   })
 
-  it('uses a receipt-attested readiness gate before dispatching the execution Action', async () => {
+  it.each([
+    ['without attemptRoute', null],
+    ['with all session fields missing', {
+      catscoProjectId: '41', workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574'
+    }]
+  ])('durably rejects CatsCo-message bundles %s before creating an Action', async (_caseName, attemptRoute) => {
     const db = database()
-    ingest(db, 'owner-a', registration(), providers)
-    ingest(db, 'owner-a', bundle(), { ...providers, id: prefix => `${prefix}-bundle` })
+    ingest(db, 'owner-a', registration('p2p_574_602'), providers)
+    ingest(db, 'owner-a', bundle(attemptRoute), { ...providers, id: prefix => `${prefix}-missing-session-route` })
+
+    const receipts = await processPending(db, 'owner-a', processingAdapters)
+    expect(receipts.at(-1)).toMatchObject({ status: 'rejected', rejectionCode: 'invalid_session_bound_route' })
+    expect(db.prepare("SELECT count(*) count FROM actions WHERE owner_uid='owner-a'").get()).toEqual({ count: 0 })
+    expect(db.prepare("SELECT status,rejection_code FROM inbox WHERE event_id='event-bundle'").get())
+      .toEqual({ status: 'rejected', rejection_code: 'invalid_session_bound_route' })
+    db.close()
+  })
+
+  it('renders catsco-message attempt Actions only with the complete session-bound evidence route', async () => {
+    const route = {
+      catscoProjectId: '41', workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574',
+      workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    }
+    const db = database()
+    ingest(db, 'owner-a', registration('p2p_574_602'), providers)
+    ingest(db, 'owner-a', bundle(route), { ...providers, id: prefix => `${prefix}-session-route` })
+    await processPending(db, 'owner-a', processingAdapters)
+
+    expect(actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toMatchObject({
+      kind: 'preflight_attempt', proofMode: 'catsco-message', evidenceTopicId: 'grp_102', workerSessionId: route.workerSessionId
+    })
+    db.prepare("UPDATE work_items SET evidence_topic_id='' WHERE owner_uid='owner-a' AND work_item_id='wi-1'").run()
+    expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/evidence topic/)
+    db.prepare("UPDATE work_items SET evidence_topic_id='grp_102' WHERE owner_uid='owner-a' AND work_item_id='wi-1'").run()
+    db.prepare("UPDATE attempts SET worker_session_id='' WHERE owner_uid='owner-a' AND attempt_id='attempt-1'").run()
+    expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/session-bound route/)
+    db.prepare("UPDATE attempts SET worker_session_id=? WHERE owner_uid='owner-a' AND attempt_id='attempt-1'").run(route.workerSessionId)
+    db.prepare("UPDATE work_items SET coordinator_session_id='' WHERE owner_uid='owner-a' AND work_item_id='wi-1'").run()
+    expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/session-bound route/)
+    db.close()
+  })
+
+  it('uses a receipt-attested readiness gate before dispatching the execution Action', async () => {
+    const route = {
+      catscoProjectId: '41', workerTopicId: 'grp_101', evidenceTopicId: 'grp_102', stewardTopicId: 'grp_103', stewardPrincipal: 'catsco-user:574',
+      workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    }
+    const db = database()
+    ingest(db, 'owner-a', registration('p2p_574_602'), providers)
+    ingest(db, 'owner-a', bundle(route), { ...providers, id: prefix => `${prefix}-bundle` })
     await processPending(db, 'owner-a', processingAdapters)
 
     expect(loadSnapshot(db, 'owner-a', 'wi-1').attempt).toMatchObject({ controlState: 'preflight', reportedState: 'unknown' })
@@ -213,7 +267,6 @@ describe('quiet evidence lanes', () => {
   })
 
   it.each([
-    ['legacy', undefined, 'grp_103'],
     ['session-bound', 'p2p_574_602', 'p2p_574_602']
   ])('polls only evidence topics and fences a no-start execution before issuing exactly one %s recovery Action', async (_route, coordinatorSessionTopicId, expectedTargetTopicId) => {
     const db = database()
@@ -244,7 +297,7 @@ describe('quiet evidence lanes', () => {
     ])
 
     ingest(db, 'owner-a', recoveryBundle(false), { ...providers, id: prefix => `${prefix}-recovery-missing-route` })
-    expect((await processPending(db, 'owner-a', processingAdapters)).at(-1)).toMatchObject({ status: 'rejected', rejectionCode: 'recovery_route_required' })
+    expect((await processPending(db, 'owner-a', processingAdapters)).at(-1)).toMatchObject({ status: 'rejected', rejectionCode: 'invalid_session_bound_route' })
     ingest(db, 'owner-a', permutedRecoveryBundle(), { ...providers, id: prefix => `${prefix}-recovery-permuted` })
     expect((await processPending(db, 'owner-a', processingAdapters)).at(-1)).toMatchObject({ status: 'rejected', rejectionCode: 'recovery_route_not_fresh' })
     ingest(db, 'owner-a', recoveryBundle(), { ...providers, id: prefix => `${prefix}-recovery-route` })

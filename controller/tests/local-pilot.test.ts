@@ -20,30 +20,29 @@ describe('deterministic local pilot', () => {
     expect(report).toMatchObject({
       localOnly: true,
       stateRoot,
-      finalState: { workItem: 'accepted', revision: 5, attempt: 'accepted' },
-      actionCounts: { execute_attempt: 1, review_candidate: 1, plan_next: 1 },
+      finalState: { workItem: 'accepted', revision: 6, attempt: 'accepted' },
+      actionCounts: { preflight_attempt: 1, execute_attempt: 1, review_candidate: 1, plan_next: 1 },
       candidateCount: 1,
-      outbox: { total: 3, satisfied: 3 },
+      outbox: { total: 4, satisfied: 4 },
       runtimeStartedSource: 'simulated-control-bridge',
       idempotencyVerified: true
     })
     expect(report.cursorPositions).toEqual({
-      'local-pilot-worker-topic': '3',
-      'local-pilot-steward-topic': '2'
+      grp_101: '3'
     })
     expect(report.sendSummary.map(item => [item.topicId, item.count])).toEqual([
-      ['local-pilot-worker-topic', 1],
-      ['local-pilot-steward-topic', 2]
+      ['local-pilot-worker-topic', 2],
+      ['p2p_574_602', 2]
     ])
     expect(report.livePrerequisites.requiredForLocalPilot).toEqual([])
     expect(statSync(join(stateRoot, 'config.json')).mode & 0o777).toBe(0o600)
 
     const db = openDatabase(String(report.databasePath))
     try {
-      expect(db.prepare('SELECT state,revision FROM work_items').get()).toEqual({ state: 'accepted', revision: 5 })
-      expect(db.prepare("SELECT count(*) count FROM inbox WHERE status='committed'").get()).toEqual({ count: 5 })
-      expect(db.prepare("SELECT count(*) count FROM outbox WHERE state='satisfied'").get()).toEqual({ count: 3 })
-      expect(db.prepare('SELECT count(*) count FROM effect_receipts').get()).toEqual({ count: 3 })
+      expect(db.prepare('SELECT state,revision FROM work_items').get()).toEqual({ state: 'accepted', revision: 6 })
+      expect(db.prepare("SELECT count(*) count FROM inbox WHERE status='committed'").get()).toEqual({ count: 6 })
+      expect(db.prepare("SELECT count(*) count FROM outbox WHERE state='satisfied'").get()).toEqual({ count: 4 })
+      expect(db.prepare('SELECT count(*) count FROM effect_receipts').get()).toEqual({ count: 4 })
     } finally {
       db.close()
     }

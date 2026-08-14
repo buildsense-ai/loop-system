@@ -14,7 +14,7 @@ import { sha256 } from '../src/lib/digest.js'
 
 const dirs: string[] = []
 const sentAt = '2026-08-04T00:00:00.000Z'
-const later = '2026-08-04T00:02:00.000Z'
+const later = '2026-08-04T00:10:00.000Z'
 const hashes = {
   taskContractHash: 'task-hash-0001', referenceSnapshotHash: 'ref-hash-00001',
   writeScopeHash: 'scope-hash-001', acceptanceContractHash: 'accept-hash-01'
@@ -66,11 +66,16 @@ it('fences an assigned no-start Attempt after a server-confirmed dispatch timeou
   ingest(db, 'owner-a', event('work_item_registered', 'register', {
     workItemId: 'wi-1', loopId: 'loop-1', profileId: 'product@1', terminalState: 'accepted', ...hashes,
     writeScope: ['src/**'], githubRepo: 'acme/repo', catscoProjectId: 'project-1',
-    workerTopicId: 'worker-topic', stewardTopicId: 'steward-topic'
+    workerTopicId: 'worker-topic', evidenceTopicId: 'grp_101', stewardTopicId: 'steward-topic', stewardPrincipal: 'catsco-user:574',
+    coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
   }), providers)
   ingest(db, 'owner-a', event('work_bundle_proposed', 'bundle', {
     workItemId: 'wi-1', expectedRevision: 1, attemptId: 'attempt-1', attemptNumber: 1, generation: 1,
     runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', leaseExpiresAt: '2026-08-05T00:00:00.000Z',
+    attemptRoute: {
+      catscoProjectId: 'project-1', workerTopicId: 'worker-topic', evidenceTopicId: 'grp_101', stewardTopicId: 'steward-topic', stewardPrincipal: 'catsco-user:574',
+      workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    },
     workBundle: { contractDigest: 'bundle-digest', instructions: 'do bounded work', deliverables: ['pull request'] }, ...hashes
   }), { ...providers, id: prefix => `${prefix}-bundle` })
   await processPending(db, 'owner-a', processingAdapters)
@@ -80,12 +85,28 @@ it('fences an assigned no-start Attempt after a server-confirmed dispatch timeou
     now: () => sentAt,
     token: () => 'claim-1'
   })
+  ingest(db, 'owner-a', {
+    type: 'worker_ready', eventId: 'event-ready', idempotencyKey: 'ready', source: 'catsco-user:559', entityRef: 'attempt:attempt-1',
+    payload: {
+      workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
+      runtimePrincipal: 'catsco-user:559', workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', signature: 'catsco-message-attested'
+    }
+  }, { ...providers, id: prefix => `${prefix}-ready` }, { topicId: 'grp_101', seqId: '1', senderUid: '559', serverReceivedAt: '2026-08-04T00:01:00.000Z' })
+  await processPending(db, 'owner-a', processingAdapters)
+  expect(loadSnapshot(db, 'owner-a', 'wi-1').attempt?.controlState).toBe('allocated')
+  expect(db.prepare("SELECT state FROM actions WHERE kind='execute_attempt'").get()).toEqual({ state: 'ready' })
+
+  await runOutbox(db, 'owner-a', { catsco }, 10, {
+    now: () => '2026-08-04T00:01:10.000Z',
+    token: () => 'claim-2'
+  })
+  expect(db.prepare("SELECT state FROM actions WHERE kind='execute_attempt'").get()).toEqual({ state: 'satisfied' })
 
   const first = await reconcile(db, 'owner-a', catsco, { now: () => later, id: prefix => `${prefix}-watchdog` }, undefined, { runtimeStartTimeoutMs: 60_000 })
   expect(first).toMatchObject({ status: 'enqueued', observations: 0, dispatchTimedOut: 1 })
   await processPending(db, 'owner-a', processingAdapters)
   expect(loadSnapshot(db, 'owner-a', 'wi-1')).toMatchObject({
-    workItem: { state: 'ready', revision: 3 },
+    workItem: { state: 'ready', revision: 4 },
     attempt: { controlState: 'superseded', reportedState: 'runtime_start_timeout', connectionState: 'disconnected' }
   })
   expect(db.prepare("SELECT count(*) count FROM actions WHERE kind='recover_attempt' AND state='ready'").get()).toEqual({ count: 1 })

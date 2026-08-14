@@ -23,7 +23,11 @@ const DATA = {
   workerUid: 'local-pilot-worker',
   stewardUid: 'local-pilot-steward',
   workerTopicId: 'local-pilot-worker-topic',
+  evidenceTopicId: 'grp_101',
   stewardTopicId: 'local-pilot-steward-topic',
+  coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:local-pilot-steward',
+  coordinatorSessionTopicId: 'p2p_574_602',
+  workerSessionId: 'session:v2:catscompany:group:grp_101:agent:local-pilot-worker',
   repository: 'local/pilot',
   prNumber: 7,
   headSha: 'local-pilot-head-sha',
@@ -40,12 +44,14 @@ const TIMES = {
   initialized: '2026-08-05T00:00:00.000Z',
   registered: '2026-08-05T00:00:10.000Z',
   bundled: '2026-08-05T00:01:00.000Z',
-  executeWake: '2026-08-05T00:01:30.000Z',
-  runtimeStarted: '2026-08-05T00:02:00.000Z',
-  candidate: '2026-08-05T00:03:00.000Z',
-  reviewWake: '2026-08-05T00:03:30.000Z',
-  review: '2026-08-05T00:04:00.000Z',
-  planWake: '2026-08-05T00:04:30.000Z',
+  preflightWake: '2026-08-05T00:01:30.000Z',
+  workerReady: '2026-08-05T00:02:00.000Z',
+  executeWake: '2026-08-05T00:02:30.000Z',
+  runtimeStarted: '2026-08-05T00:03:00.000Z',
+  candidate: '2026-08-05T00:04:00.000Z',
+  reviewWake: '2026-08-05T00:04:30.000Z',
+  review: '2026-08-05T00:05:00.000Z',
+  planWake: '2026-08-05T00:05:30.000Z',
   leaseExpires: '2026-08-06T00:00:00.000Z',
   tick: '2026-08-05T00:10:00.000Z'
 } as const
@@ -123,7 +129,7 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
     migrate(db)
     initializeOwner(db, DATA.ownerUid, TIMES.initialized)
 
-    const catsco = new LocalPilotCatscoAdapter(DATA.ownerUid, [TIMES.executeWake, TIMES.reviewWake, TIMES.planWake])
+    const catsco = new LocalPilotCatscoAdapter(DATA.ownerUid, [TIMES.preflightWake, TIMES.executeWake, TIMES.reviewWake, TIMES.planWake])
     const deliverableBody = {
       kind: 'github_pr' as const,
       repository: DATA.repository,
@@ -163,8 +169,11 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
       githubRepo: DATA.repository,
       catscoProjectId: 'local-pilot-project',
       workerTopicId: DATA.workerTopicId,
+      evidenceTopicId: DATA.evidenceTopicId,
       stewardTopicId: DATA.stewardTopicId,
-      stewardPrincipal: `catsco-user:${DATA.stewardUid}`
+      stewardPrincipal: `catsco-user:${DATA.stewardUid}`,
+      coordinatorSessionId: DATA.coordinatorSessionId,
+      coordinatorSessionTopicId: DATA.coordinatorSessionTopicId
     })
     const bundle = event('work_bundle_proposed', 'bundle', 'operator', {
       workItemId: DATA.workItemId,
@@ -175,6 +184,12 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
       runtimePrincipal: `catsco-user:${DATA.workerUid}`,
       proofMode: 'catsco-message',
       leaseExpiresAt: TIMES.leaseExpires,
+      attemptRoute: {
+        catscoProjectId: 'local-pilot-project', workerTopicId: DATA.workerTopicId, evidenceTopicId: DATA.evidenceTopicId,
+        stewardTopicId: DATA.stewardTopicId, stewardPrincipal: `catsco-user:${DATA.stewardUid}`,
+        workerSessionId: DATA.workerSessionId, coordinatorSessionId: DATA.coordinatorSessionId,
+        coordinatorSessionTopicId: DATA.coordinatorSessionTopicId
+      },
       workBundle: {
         contractDigest: 'local-pilot-bundle-digest',
         instructions: 'Execute the deterministic local pilot bundle',
@@ -186,37 +201,54 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
     ingest(db, DATA.ownerUid, bundle, providers(TIMES.bundled, 'bundle'))
     await tick(db, DATA.ownerUid, adapters, tickOptions)
 
-    const runtimeStarted = event('runtime_started', 'runtime-started', 'control', {
+    const workerReady = event('worker_ready', 'worker-ready', `catsco-user:${DATA.workerUid}`, {
       workItemId: DATA.workItemId,
       expectedRevision: 2,
       attemptId: 'local-pilot-attempt-1',
       generation: 1,
       runtimePrincipal: `catsco-user:${DATA.workerUid}`,
+      workerSessionId: DATA.workerSessionId,
       signature: 'catsco-message-attested'
     })
-    const runtimeStartedAttestation = catsco.enqueueObservation(DATA.workerTopicId, DATA.workerUid, runtimeStarted, TIMES.runtimeStarted)
+    workerReady.entityRef = 'attempt:local-pilot-attempt-1'
+    const workerReadyAttestation = catsco.enqueueObservation(DATA.evidenceTopicId, DATA.workerUid, workerReady, TIMES.workerReady)
+    await reconcile(db, DATA.ownerUid, catsco, providers(TIMES.workerReady, 'worker-ready-reconcile'))
+    await tick(db, DATA.ownerUid, adapters, tickOptions)
+
+    const runtimeStarted = event('runtime_started', 'runtime-started', `catsco-user:${DATA.workerUid}`, {
+      workItemId: DATA.workItemId,
+      expectedRevision: 3,
+      attemptId: 'local-pilot-attempt-1',
+      generation: 1,
+      runtimePrincipal: `catsco-user:${DATA.workerUid}`,
+      workerSessionId: DATA.workerSessionId,
+      signature: 'catsco-message-attested'
+    })
+    runtimeStarted.entityRef = 'attempt:local-pilot-attempt-1'
+    const runtimeStartedAttestation = catsco.enqueueObservation(DATA.evidenceTopicId, DATA.workerUid, runtimeStarted, TIMES.runtimeStarted)
     await reconcile(db, DATA.ownerUid, catsco, providers(TIMES.runtimeStarted, 'runtime-started-reconcile'))
     await tick(db, DATA.ownerUid, adapters, tickOptions)
 
     const candidate = event('candidate_submitted', 'candidate', 'catsco', {
       ownerUid: DATA.ownerUid,
       workItemId: DATA.workItemId,
-      workItemRevision: 3,
+      workItemRevision: 4,
       attemptId: 'local-pilot-attempt-1',
       generation: 1,
       runtimePrincipal: `catsco-user:${DATA.workerUid}`,
+      workerSessionId: DATA.workerSessionId,
       proofMode: 'catsco-message',
       candidateId: 'local-pilot-candidate-1',
       deliverable: { ...deliverableBody, digest: deliverableDigest },
       ...DATA.hashes
     })
-    const candidateAttestation = catsco.enqueueObservation(DATA.workerTopicId, DATA.workerUid, candidate, TIMES.candidate)
+    const candidateAttestation = catsco.enqueueObservation(DATA.evidenceTopicId, DATA.workerUid, candidate, TIMES.candidate)
     await reconcile(db, DATA.ownerUid, catsco, providers(TIMES.candidate, 'candidate-reconcile'))
     await tick(db, DATA.ownerUid, adapters, tickOptions)
 
     const review = event('review_decided', 'review', 'catsco', {
       workItemId: DATA.workItemId,
-      expectedRevision: 4,
+      expectedRevision: 5,
       candidateId: 'local-pilot-candidate-1',
       outcome: 'accepted',
       reviewerPrincipal: `catsco-user:${DATA.stewardUid}`,
@@ -224,8 +256,8 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
       reviewedDeliverableDigest: deliverableDigest,
       acceptanceContractHash: DATA.hashes.acceptanceContractHash
     })
-    const reviewAttestation = catsco.enqueueObservation(DATA.stewardTopicId, DATA.stewardUid, review, TIMES.review)
-    await reconcile(db, DATA.ownerUid, catsco, providers(TIMES.review, 'review-reconcile'))
+    const reviewAttestation = catsco.enqueueObservation(DATA.coordinatorSessionTopicId, DATA.stewardUid, review, TIMES.review)
+    ingest(db, DATA.ownerUid, review, providers(TIMES.review, 'review-bridge'), reviewAttestation)
     await tick(db, DATA.ownerUid, adapters, tickOptions)
 
     const duplicateRegistration = ingest(db, DATA.ownerUid, registration, providers(TIMES.registered, 'duplicate-register'))
@@ -246,7 +278,7 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
     const cursorRows = db.prepare(`SELECT scope_key,cursor_json FROM source_cursors WHERE owner_uid=? AND source='catsco'`)
       .all(DATA.ownerUid) as { scope_key: string; cursor_json: string }[]
     const cursorPositions = Object.fromEntries(cursorRows.map(row => [row.scope_key, String(JSON.parse(row.cursor_json))]))
-    const sendSummary = [DATA.workerTopicId, DATA.stewardTopicId].map(topicId => {
+    const sendSummary = [DATA.workerTopicId, DATA.coordinatorSessionTopicId].map(topicId => {
       const sends = catsco.sends.filter(send => send.topicId === topicId)
       return {
         topicId,
@@ -256,16 +288,15 @@ export async function runLocalPilot(options: LocalPilotOptions = {}): Promise<Lo
     })
 
     requirePilot(snapshot.workItem?.state === 'accepted', 'Work Item is not accepted')
-    requirePilot(snapshot.workItem.revision === 5, 'Work Item revision is not 5')
+    requirePilot(snapshot.workItem.revision === 6, 'Work Item revision is not 6')
     requirePilot(snapshot.attempt?.controlState === 'accepted', 'Attempt is not accepted')
     requirePilot(candidateCount === 1, 'Candidate count is not one')
     for (const kind of ['execute_attempt', 'review_candidate', 'plan_next']) {
       requirePilot(actionCounts[kind] === 1, `${kind} Action count is not one`)
     }
-    requirePilot(outboxTotal === 3 && outboxSatisfied === outboxTotal, 'not all outbox effects are satisfied')
-    requirePilot(cursorPositions[DATA.workerTopicId] === '3', 'Worker cursor did not advance through the Candidate')
-    requirePilot(cursorPositions[DATA.stewardTopicId] === '2', 'Steward cursor did not advance through the review')
-    requirePilot(sendSummary[0]?.count === 1 && sendSummary[1]?.count === 2, 'wakes were not sent to expected topics')
+    requirePilot(outboxTotal === 4 && outboxSatisfied === outboxTotal, 'not all outbox effects are satisfied')
+    requirePilot(cursorPositions[DATA.evidenceTopicId] === '3', 'Evidence cursor did not advance through the Candidate')
+    requirePilot(sendSummary[0]?.count === 2 && sendSummary[1]?.count === 2, 'wakes were not sent to expected topics')
 
     const report: LocalPilotReport = {
       localOnly: true,

@@ -208,6 +208,32 @@ it('is deterministic for identical kernel inputs', () => {
 })
 
 describe('Candidate Commit', () => {
+  it('accepts a Candidate only when its deliverable digest covers the exact submitted fields', async () => {
+    const { db } = database()
+    await reachInProgress(db)
+    const submitted = { ...deliverableBody }
+    ingest(db, 'owner-a', candidate({ deliverable: { ...submitted, digest: digestJson(submitted) } }), {
+      ...providers, id: prefix => `${prefix}-candidate-digest-valid`
+    })
+    const [receipt] = await process(db)
+    expect(receipt).toMatchObject({ status: 'committed' })
+    expect(db.prepare("SELECT count(*) count FROM candidates WHERE owner_uid='owner-a'").get()).toEqual({ count: 1 })
+    db.close()
+  })
+
+  it('rejects a Candidate when its deliverable digest does not match the submitted fields', async () => {
+    const { db } = database()
+    await reachInProgress(db)
+    ingest(db, 'owner-a', candidate({ deliverable: { ...deliverableBody, headSha: 'head-submitted', digest: deliverableDigest } }), {
+      ...providers, id: prefix => `${prefix}-candidate-digest-invalid`
+    })
+    const [receipt] = await process(db)
+    expect(receipt).toMatchObject({ status: 'rejected', rejectionCode: 'deliverable_digest_mismatch' })
+    expect(db.prepare('SELECT count(*) count FROM candidates').get()).toEqual({ count: 0 })
+    expect(db.prepare("SELECT count(*) count FROM actions WHERE kind='review_candidate'").get()).toEqual({ count: 0 })
+    db.close()
+  })
+
   it('commits one Candidate and one unique review action on duplicate submission', async () => {
     const { db } = database()
     await reachInProgress(db)

@@ -16,6 +16,10 @@ export async function validateCandidate(db: SqliteDatabase, ownerUid: string, ro
   if (work.revision!==event.payload.workItemRevision) throw new CandidateRejection('stale_work_item_revision')
   if (attempt.generation!==event.payload.generation) throw new CandidateRejection('stale_generation')
   if (event.payload.deliverable.repository!==work.githubRepo) throw new CandidateRejection('github_repository_mismatch')
+  const { kind, repository, prNumber, headSha, baseSha } = event.payload.deliverable
+  if (event.payload.deliverable.digest !== digestJson({ kind, repository, prNumber, headSha, baseSha })) {
+    throw new CandidateRejection('deliverable_digest_mismatch')
+  }
   const attestation = parseCatscoAttestation(row)
   try {
     await runtime.verify(ownerUid, event.payload, attempt, {

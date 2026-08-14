@@ -53,9 +53,29 @@ function common(row: Row) {
   }
 }
 
+function requireCatscoMessageRoute(row: Row): void {
+  if (String(row.proof_mode) !== 'catsco-message') return
+
+  const evidenceTopicId = String(row.evidence_topic_id ?? '')
+  const workerSessionId = String(row.worker_session_id ?? '')
+  const coordinatorSessionId = String(row.coordinator_session_id ?? '')
+  const coordinatorSessionTopicId = String(row.coordinator_session_topic_id ?? '')
+  const workerTopicId = String(row.worker_topic_id)
+
+  const sessionBound = Boolean(
+    workerSessionId && coordinatorSessionId && coordinatorSessionTopicId &&
+    workerSessionId !== coordinatorSessionId &&
+    ![workerTopicId, evidenceTopicId].includes(coordinatorSessionTopicId)
+  )
+  if (!evidenceTopicId || !sessionBound) {
+    throw new Error('catsco-message action requires an evidence topic and session-bound route')
+  }
+}
+
 function render(row: Row, ownerUid: string): Record<string, unknown> {
   const base = common(row)
   if (row.kind === 'preflight_attempt' || row.kind === 'execute_attempt') {
+    requireCatscoMessageRoute(row)
     const packet = {
       kind: String(row.kind), schema: ACTION_PACKET_SCHEMA, ...base,
       ownerUid,

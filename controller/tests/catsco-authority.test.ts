@@ -42,36 +42,55 @@ function database(): SqliteDatabase {
 
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
 
-function registration() {
+function registration(withEvidence = true) {
   return envelope('work_item_registered', 'register', {
     workItemId: 'wi-1', loopId: 'loop-1', profileId: 'product@1', terminalState: 'accepted', ...hashes,
     writeScope: ['src/**'], githubRepo: 'acme/repo', catscoProjectId: 'project-1',
-    workerTopicId: 'worker-topic', stewardTopicId: 'steward-topic', stewardPrincipal: 'catsco-user:574'
+    workerTopicId: 'worker-topic', stewardTopicId: 'steward-topic', stewardPrincipal: 'catsco-user:574',
+    ...(withEvidence ? {
+      evidenceTopicId: 'grp_101', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    } : {})
   })
 }
 function catscoBundle(leaseExpiresAt = '2026-08-05T00:00:00.000Z') {
   return envelope('work_bundle_proposed', 'bundle', {
     workItemId: 'wi-1', expectedRevision: 1, attemptId: 'attempt-1', attemptNumber: 1, generation: 1,
     runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', leaseExpiresAt,
+    attemptRoute: {
+      catscoProjectId: 'project-1', workerTopicId: 'worker-topic', evidenceTopicId: 'grp_101', stewardTopicId: 'steward-topic', stewardPrincipal: 'catsco-user:574',
+      workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', coordinatorSessionId: 'session:v2:catscompany:p2p:p2p_574_602:agent:574', coordinatorSessionTopicId: 'p2p_574_602'
+    },
     workBundle: { contractDigest: 'bundle-digest-1', instructions: 'work', deliverables: ['pull request'] }, ...hashes
   })
 }
+function ready() {
+  return {
+    ...envelope('worker_ready', 'ready', {
+      workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
+      runtimePrincipal: 'catsco-user:559', workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', signature: 'catsco-message-attested'
+    }),
+    source: 'catsco-user:559', entityRef: 'attempt:attempt-1'
+  }
+}
 function started() {
-  return envelope('runtime_started', 'started', {
-    workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
-    runtimePrincipal: 'catsco-user:559', signature: 'catsco-message-attested'
-  })
+  return {
+    ...envelope('runtime_started', 'started', {
+      workItemId: 'wi-1', expectedRevision: 3, attemptId: 'attempt-1', generation: 1,
+      runtimePrincipal: 'catsco-user:559', workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', signature: 'catsco-message-attested'
+    }),
+    source: 'catsco-user:559', entityRef: 'attempt:attempt-1'
+  }
 }
 function candidate(overrides: Record<string, unknown> = {}, key = 'candidate') {
   return envelope('candidate_submitted', key, {
-    ownerUid: 'owner-a', workItemId: 'wi-1', workItemRevision: 3, attemptId: 'attempt-1', generation: 1,
-    runtimePrincipal: 'catsco-user:559', proofMode: 'catsco-message', candidateId: 'candidate-1',
+    ownerUid: 'owner-a', workItemId: 'wi-1', workItemRevision: 4, attemptId: 'attempt-1', generation: 1,
+    runtimePrincipal: 'catsco-user:559', workerSessionId: 'session:v2:catscompany:group:grp_101:agent:559', proofMode: 'catsco-message', candidateId: 'candidate-1',
     deliverable: { ...deliverableBody, digest: deliverableDigest }, ...hashes, ...overrides
   })
 }
 function review(overrides: Record<string, unknown> = {}, key = 'review') {
   return envelope('review_decided', key, {
-    workItemId: 'wi-1', expectedRevision: 4, candidateId: 'candidate-1', outcome: 'accepted',
+    workItemId: 'wi-1', expectedRevision: 5, candidateId: 'candidate-1', outcome: 'accepted',
     reviewerPrincipal: 'catsco-user:574', reviewedHeadSha: 'head-123',
     reviewedDeliverableDigest: deliverableDigest, acceptanceContractHash: hashes.acceptanceContractHash,
     ...overrides
@@ -86,15 +105,34 @@ const adapters: ProcessingAdapters = {
   runtime: new ExplicitRuntimeProofAdapter(new Ed25519RuntimeProofAdapter()), github,
   reviewer: new CatscoReviewerAuthorityAdapter(new UnavailableReviewerAuthorityAdapter())
 }
+function markPreflightDelivered(db: SqliteDatabase) {
+  const receipt = JSON.stringify({ serverConfirmed: true, serverReceivedAt: '2026-08-04T00:02:00.000Z' })
+  db.prepare("UPDATE actions SET state='satisfied' WHERE owner_uid='owner-a' AND kind='preflight_attempt'").run()
+  db.prepare("UPDATE outbox SET state='satisfied' WHERE owner_uid='owner-a' AND action_id='action:preflight:attempt-1:1'").run()
+  db.prepare(`INSERT INTO effect_receipts(owner_uid,effect_key,outbox_id,outcome,external_id,request_digest,response_digest,receipt_json,recorded_at)
+    SELECT owner_uid,effect_key,outbox_id,'satisfied','test-receipt','test-request','test-response',?,?
+    FROM outbox WHERE owner_uid='owner-a' AND action_id='action:preflight:attempt-1:1'`).run(receipt, '2026-08-04T00:02:00.000Z')
+}
+
+function legacyStarted() {
+  return envelope('runtime_started', 'started-ed', {
+    workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
+    runtimePrincipal: 'catsco-user:runtime-ed', signature: 'catsco-message-attested'
+  })
+}
+
 async function reachInProgress(db: SqliteDatabase, leaseExpiresAt?: string) {
   ingest(db, 'owner-a', registration(), providers)
   ingest(db, 'owner-a', catscoBundle(leaseExpiresAt), providers)
-  ingest(db, 'owner-a', started(), providers, attestation('worker-topic', '559'))
+  await processPending(db, 'owner-a', adapters)
+  markPreflightDelivered(db)
+  ingest(db, 'owner-a', ready(), providers, attestation('grp_101', '559'))
+  ingest(db, 'owner-a', started(), providers, attestation('grp_101', '559'))
   await processPending(db, 'owner-a', adapters)
 }
 async function reachCandidate(db: SqliteDatabase) {
   await reachInProgress(db)
-  ingest(db, 'owner-a', candidate(), providers, attestation('worker-topic', '559'))
+  ingest(db, 'owner-a', candidate(), providers, attestation('grp_101', '559'))
   await processPending(db, 'owner-a', adapters)
 }
 
@@ -133,9 +171,9 @@ describe('explicit runtime proof modes', () => {
   })
 
   it.each([
-    ['wrong sender', attestation('worker-topic', '574'), undefined],
+    ['wrong sender', attestation('grp_101', '574'), undefined],
     ['wrong topic', attestation('steward-topic', '559'), undefined],
-    ['expired lease', attestation('worker-topic', '559', serverTime), '2026-08-04T00:02:00.000Z']
+    ['expired lease', attestation('grp_101', '559', serverTime), '2026-08-04T00:02:00.000Z']
   ])('rejects %s without a Candidate', async (_name, observed, lease) => {
     const db = database()
     await reachInProgress(db, lease)
@@ -150,17 +188,14 @@ describe('explicit runtime proof modes', () => {
     const db = database()
     const { publicKey, privateKey } = generateKeyPairSync('ed25519')
     const publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString()
-    ingest(db, 'owner-a', registration(), providers)
+    ingest(db, 'owner-a', registration(false), providers)
     ingest(db, 'owner-a', envelope('work_bundle_proposed', 'bundle-ed', {
       workItemId: 'wi-1', expectedRevision: 1, attemptId: 'attempt-1', attemptNumber: 1, generation: 1,
       runtimePrincipal: 'catsco-user:runtime-ed', proofKeyId: 'key-ed', proofPublicKey: publicPem,
       leaseExpiresAt: '2026-08-05T00:00:00.000Z',
       workBundle: { contractDigest: 'bundle-digest-ed', instructions: 'work', deliverables: ['pull request'] }, ...hashes
     }), providers)
-    ingest(db, 'owner-a', envelope('runtime_started', 'started-ed', {
-      workItemId: 'wi-1', expectedRevision: 2, attemptId: 'attempt-1', generation: 1,
-      runtimePrincipal: 'catsco-user:runtime-ed', signature: 'catsco-message-attested'
-    }), providers, attestation('worker-topic', 'runtime-ed'))
+    ingest(db, 'owner-a', legacyStarted(), providers, attestation('worker-topic', 'runtime-ed'))
     await processPending(db, 'owner-a', adapters)
     const unsigned: CandidatePacket = {
       ownerUid: 'owner-a', workItemId: 'wi-1', workItemRevision: 3, attemptId: 'attempt-1', generation: 1,
@@ -180,7 +215,7 @@ describe('CatsCo Steward review authority', () => {
   it('accepts only the stored Steward principal on the Steward topic', async () => {
     const db = database()
     await reachCandidate(db)
-    ingest(db, 'owner-a', review(), providers, attestation('steward-topic', '574', serverTime, '42'))
+    ingest(db, 'owner-a', review(), providers, attestation('p2p_574_602', '574', serverTime, '42'))
     const [receipt] = await processPending(db, 'owner-a', adapters)
     expect(receipt).toMatchObject({ status: 'committed' })
     expect(loadSnapshot(db, 'owner-a', 'wi-1').workItem?.state).toBe('accepted')
@@ -188,8 +223,8 @@ describe('CatsCo Steward review authority', () => {
   })
 
   it.each([
-    ['forged reviewerPrincipal', review({ reviewerPrincipal: 'catsco-user:999' }, 'review-forged'), attestation('steward-topic', '574')],
-    ['wrong Steward sender', review({}, 'review-wrong-sender'), attestation('steward-topic', '999')],
+    ['forged reviewerPrincipal', review({ reviewerPrincipal: 'catsco-user:999' }, 'review-forged'), attestation('p2p_574_602', '574')],
+    ['wrong Steward sender', review({}, 'review-wrong-sender'), attestation('p2p_574_602', '999')],
     ['wrong Steward topic', review({}, 'review-wrong-topic'), attestation('worker-topic', '574')]
   ])('rejects %s', async (_name, decision, observed) => {
     const db = database()
