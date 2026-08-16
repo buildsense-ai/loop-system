@@ -17,6 +17,7 @@ Implemented:
 - transactional state + Candidate + Action + outbox + transition receipt commits;
 - outbox claims, exponential retry, postcondition lookup, and durable effect receipts;
 - explicit, durable runtime proof modes: default Ed25519 or trusted CatsCo-message attestation, plus read-only `gh api` PR evidence;
+- Controller Ed25519 provenance signatures on immutable `preflight_attempt` and `execute_attempt` wake packets;
 - trusted CatsCo envelope attestations (`topicId`, `seqId`, `senderUid`, `serverReceivedAt`) stored separately from message-controlled JSON;
 - stored Steward principal/topic authorization for attested CatsCo review decisions;
 - CLI commands: `init`, `ingest`, `tick`, `status`, `receipt`, `reconcile`, `doctor`, `adapter-health`, and local-only `local-pilot`.
@@ -54,14 +55,34 @@ JSON event → durable inbox → pure decide(snapshot,event)
 
 SQLite uses WAL, foreign keys, full synchronous commits, a busy timeout, and `BEGIN IMMEDIATE`. Every operational primary/unique/foreign key is owner-scoped. A `wake_agent` outbox row has a composite foreign key to its Action plus a trigger requiring an exact ready Action revision and digest.
 
+### Controller Action packet provenance
+
+When the Controller creates an immutable outbox payload for `preflight_attempt` or `execute_attempt`, it provisions or reuses an owner-scoped Ed25519 signing identity and adds these fields:
+
+```json
+{
+  "controllerSignatureAlgorithm": "ed25519",
+  "controllerKeyId": "controller-ed25519:<sha256-public-key>",
+  "controllerPublicKey": "-----BEGIN PUBLIC KEY-----...",
+  "controllerSignature": "base64-signature"
+}
+```
+
+The signature is Ed25519 over the canonical JSON packet with **only** `controllerSignature` omitted. It therefore binds the Action object and ID, `targetTopicId` (including the matching Action target topic), `leaseExpiresAt`, `catscoProjectId`, contracts, route, attempt generation, and every other packet field. `packetDigest` covers the same unsigned packet except for `packetDigest` itself. The public verification helper is `verifyControllerActionPacket` in `src/controller/action-packet-provenance.ts`; a plugin can use the carried public key and signature without any Controller HTTP endpoint or private-key access.
+
+A signature verifies packet integrity and key possession; it does not establish trust in an arbitrary newly presented public key. A plugin must accept packets only through its authenticated Controller/CatsCo transport boundary and pin or authorize `controllerKeyId` according to its deployment policy.
+
+On its first signing use, the Controller durably records the non-secret `controllerKeyId` for that owner. Thereafter, a missing private-key file or a file whose identity differs from that pin stops packet rendering: the Controller never silently generates a replacement key that workers have not pinned. Automatic key rotation is deliberately unsupported. Recovery requires restoring the exact original private key; a planned rotation must be coordinated with worker pin updates and an explicit, controlled update of the durable Controller pin before the new key is used.
+
 The runtime database is outside the repository:
 
 ```text
 $LOOPCTL_STATE_ROOT/config.json
 $LOOPCTL_STATE_ROOT/catsco/<verified-owner-uid>/loop.db
+$LOOPCTL_STATE_ROOT/catsco/<verified-owner-uid>/controller-action-signing-v1-<owner-hash>.json
 ```
 
-No command accepts an owner UID. `init` and every stateful command derive the active namespace from the current authenticated `opencli catsco me` result; the configured `ownerUid` is only a legacy compatibility field and is never the authority source. Tokens, passwords, and runtime private keys are never stored.
+No command accepts an owner UID. `init` and every stateful command derive the active namespace from the current authenticated `opencli catsco me` result; the configured `ownerUid` is only a legacy compatibility field and is never the authority source. Tokens, passwords, and runtime private keys are never stored. The Controller's own action-signing private key is the exception: it is provisioned locally on first attempt-packet render in the owner-scoped mode-0700 state directory, written mode 0600, and never included in SQLite, logs, CLI output, or packets. SQLite retains only its non-secret worker-pin key identifier; existing key files must be regular, non-symlink files without group/other permissions before they are reused.
 
 ## Install and build
 

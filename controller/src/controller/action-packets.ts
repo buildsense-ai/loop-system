@@ -1,6 +1,7 @@
 import type { SqliteDatabase } from '../store/sqlite.js'
 import { canonicalize } from '../lib/canonical-json.js'
 import { digestJson } from '../lib/digest.js'
+import { signControllerActionPacket } from './action-packet-provenance.js'
 
 export const ACTION_PACKET_SCHEMA = 'loopctl-action-packet-v1'
 
@@ -72,7 +73,14 @@ function requireCatscoMessageRoute(row: Row): void {
   }
 }
 
-function render(row: Row, ownerUid: string): Record<string, unknown> {
+function finalizePacket(db: SqliteDatabase, ownerUid: string, packet: Record<string, unknown>): Record<string, unknown> {
+  if (packet.kind === 'preflight_attempt' || packet.kind === 'execute_attempt') {
+    return signControllerActionPacket(db, ownerUid, packet)
+  }
+  return { ...packet, packetDigest: digestJson(packet) }
+}
+
+function render(db: SqliteDatabase, row: Row, ownerUid: string): Record<string, unknown> {
   const base = common(row)
   if (row.kind === 'preflight_attempt' || row.kind === 'execute_attempt') {
     requireCatscoMessageRoute(row)
@@ -80,7 +88,7 @@ function render(row: Row, ownerUid: string): Record<string, unknown> {
       kind: String(row.kind), schema: ACTION_PACKET_SCHEMA, ...base,
       ownerUid,
       loopId: String(row.loop_id), profileId: String(row.profile_id),
-      workerTopicId: String(row.worker_topic_id),
+      catscoProjectId: String(row.catsco_project_id), workerTopicId: String(row.worker_topic_id),
       ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
       ...(String(row.worker_session_id ?? '') ? { workerSessionId: String(row.worker_session_id) } : {}),
       githubRepo: String(row.github_repo),
@@ -92,7 +100,7 @@ function render(row: Row, ownerUid: string): Record<string, unknown> {
       ...(String(row.proof_public_key) ? { proofPublicKey: String(row.proof_public_key) } : {}),
       workBundle: json(row.work_bundle_json)
     }
-    return { ...packet, packetDigest: digestJson(packet) }
+    return finalizePacket(db, ownerUid, packet)
   }
   if (row.kind === 'recover_attempt') {
     const packet = {
@@ -108,7 +116,7 @@ function render(row: Row, ownerUid: string): Record<string, unknown> {
       },
       recovery: { requireFreshWorkerTopic: true, requireFreshEvidenceTopic: true, requireFreshStewardTopic: true, requireFreshWorktree: true, requireFreshWorkspaceLease: true }
     }
-    return { ...packet, packetDigest: digestJson(packet) }
+    return finalizePacket(db, ownerUid, packet)
   }
   if (row.kind === 'review_candidate') {
     const candidate = row.candidate_id ? {
@@ -125,7 +133,7 @@ function render(row: Row, ownerUid: string): Record<string, unknown> {
       ...(String(row.evidence_topic_id ?? '') ? { evidenceTopicId: String(row.evidence_topic_id) } : {}),
       acceptanceContractHash: String(row.acceptance_contract_hash), candidate
     }
-    return { ...packet, packetDigest: digestJson(packet) }
+    return finalizePacket(db, ownerUid, packet)
   }
   const packet = {
     kind: 'plan_next', schema: ACTION_PACKET_SCHEMA, ...base,
@@ -137,11 +145,11 @@ function render(row: Row, ownerUid: string): Record<string, unknown> {
     } : null,
     outcomeContext: { actionState: String(row.state), targetDigest: String(row.target_digest), acceptanceContractHash: String(row.acceptance_contract_hash) }
   }
-  return { ...packet, packetDigest: digestJson(packet) }
+  return finalizePacket(db, ownerUid, packet)
 }
 
 export function renderActionPacket(db: SqliteDatabase, ownerUid: string, actionId: string): string {
-  return canonicalize(render(actionRow(db, ownerUid, actionId), ownerUid))
+  return canonicalize(render(db, actionRow(db, ownerUid, actionId), ownerUid))
 }
 
 export function actionPacket(db: SqliteDatabase, ownerUid: string, actionId: string): Record<string, unknown> {

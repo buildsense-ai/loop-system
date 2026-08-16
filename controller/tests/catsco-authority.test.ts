@@ -248,7 +248,7 @@ it('migrates a populated previous-schema database with Ed25519 defaults', () => 
   }
   initializeOwner(db, 'owner-a', now)
   migrate(db)
-  expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1').get()).toEqual({ version: 6 })
+  expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1').get()).toEqual({ version: 7 })
   expect(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='inbox'").get()).toBeTruthy()
   db.close()
 })

@@ -332,6 +332,10 @@ describe('content-addressed outbox sends', () => {
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)').run(now)
     database.exec(readFileSync(new URL('../migrations/006_session_bound_routes.sql', import.meta.url), 'utf8'))
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)').run(now)
+    // Signing a current Action also needs the non-secret key-pin table, while
+    // migration 003 remains deliberately absent for this transport fixture.
+    database.exec(readFileSync(new URL('../migrations/007_controller_action_signing_pins.sql', import.meta.url), 'utf8'))
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)').run(now)
     initializeOwner(database, 'owner-a', now)
     await withOutbox(database)
 

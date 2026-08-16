@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { chmodSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { openDatabase, type SqliteDatabase } from '../src/store/sqlite.js'
 import { initializeOwner, migrate } from '../src/store/migrate.js'
@@ -9,9 +9,10 @@ import { processPending, type ProcessingAdapters } from '../src/controller/proce
 import { reconcile } from '../src/controller/reconcile.js'
 import { runOutbox } from '../src/controller/outbox.js'
 import { actionPacket } from '../src/controller/action-packets.js'
+import { verifyControllerActionPacket } from '../src/controller/action-packet-provenance.js'
 import { loadSnapshot } from '../src/store/repositories.js'
 import type { CatscoAdapter, CatscoMessageReceipt, CatscoPollResult, CatscoSendRequest } from '../src/adapters/catsco.js'
-import { sha256 } from '../src/lib/digest.js'
+import { digestJson, sha256 } from '../src/lib/digest.js'
 
 const dirs: string[] = []
 const sentAt = '2026-08-04T00:00:00.000Z'
@@ -29,6 +30,12 @@ function database(): SqliteDatabase {
   migrate(db)
   initializeOwner(db, 'owner-a', sentAt)
   return db
+}
+
+function signingIdentityPath(db: SqliteDatabase): string {
+  const files = readdirSync(dirname(String(db.name))).filter(file => file.startsWith('controller-action-signing-v1-'))
+  expect(files).toHaveLength(1)
+  return join(dirname(String(db.name)), files[0]!)
 }
 
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
@@ -107,6 +114,13 @@ function started() {
   }
 }
 
+async function provisionPreflightPacket(db: SqliteDatabase): Promise<Record<string, unknown>> {
+  ingest(db, 'owner-a', registration(), providers)
+  ingest(db, 'owner-a', bundle(), { ...providers, id: prefix => `provision-${prefix}` })
+  await processPending(db, 'owner-a', processingAdapters)
+  return actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')
+}
+
 class FakeCatsco implements CatscoAdapter {
   readonly polls: string[] = []
   readonly receipts = new Map<string, CatscoMessageReceipt>()
@@ -182,9 +196,28 @@ describe('quiet evidence lanes', () => {
     ingest(db, 'owner-a', bundle(route), { ...providers, id: prefix => `${prefix}-session-route` })
     await processPending(db, 'owner-a', processingAdapters)
 
-    expect(actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toMatchObject({
-      kind: 'preflight_attempt', proofMode: 'catsco-message', evidenceTopicId: 'grp_102', workerSessionId: route.workerSessionId
+    const preflightPacket = actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')
+    expect(preflightPacket).toMatchObject({
+      kind: 'preflight_attempt', catscoProjectId: '41', proofMode: 'catsco-message', evidenceTopicId: 'grp_102', workerSessionId: route.workerSessionId
     })
+    expect(preflightPacket).toMatchObject({
+      controllerSignatureAlgorithm: 'ed25519',
+      controllerKeyId: expect.stringMatching(/^controller-ed25519:/),
+      controllerPublicKey: expect.stringContaining('BEGIN PUBLIC KEY'),
+      controllerSignature: expect.any(String)
+    })
+    expect(verifyControllerActionPacket(preflightPacket)).toBe(true)
+    expect(actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toEqual(preflightPacket)
+    expect(JSON.stringify(preflightPacket)).not.toContain('PRIVATE KEY')
+    const signingFiles = readdirSync(dirname(String(db.name))).filter(file => file.startsWith('controller-action-signing-v1-'))
+    expect(signingFiles).toHaveLength(1)
+    expect(statSync(join(dirname(String(db.name)), signingFiles[0]!)).mode & 0o777).toBe(0o600)
+    const { packetDigest: preflightPacketDigest, controllerSignature: _preflightSignature, ...preflightPacketContent } = preflightPacket
+    expect(preflightPacketDigest).toBe(digestJson(preflightPacketContent))
+    expect(verifyControllerActionPacket({ ...preflightPacket, targetTopicId: 'grp_tampered' })).toBe(false)
+    expect(verifyControllerActionPacket({ ...preflightPacket, leaseExpiresAt: '2026-08-08T00:00:00.000Z' })).toBe(false)
+    expect(verifyControllerActionPacket({ ...preflightPacket, catscoProjectId: 'tampered-project' })).toBe(false)
+    expect(verifyControllerActionPacket({ ...preflightPacket, action: { ...(preflightPacket.action as object), id: 'action:tampered' } })).toBe(false)
     db.prepare("UPDATE work_items SET evidence_topic_id='' WHERE owner_uid='owner-a' AND work_item_id='wi-1'").run()
     expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/evidence topic/)
     db.prepare("UPDATE work_items SET evidence_topic_id='grp_102' WHERE owner_uid='owner-a' AND work_item_id='wi-1'").run()
@@ -193,6 +226,64 @@ describe('quiet evidence lanes', () => {
     db.prepare("UPDATE attempts SET worker_session_id=? WHERE owner_uid='owner-a' AND attempt_id='attempt-1'").run(route.workerSessionId)
     db.prepare("UPDATE work_items SET coordinator_session_id='' WHERE owner_uid='owner-a' AND work_item_id='wi-1'").run()
     expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/session-bound route/)
+    db.close()
+  })
+
+  it('rejects a group- or other-readable signing identity before reuse', async () => {
+    const db = database()
+    await provisionPreflightPacket(db)
+    const path = signingIdentityPath(db)
+    chmodSync(path, 0o644)
+
+    expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/group or others/)
+    expect(statSync(path).mode & 0o777).toBe(0o644)
+    db.close()
+  })
+
+  it('rejects a symbolic-link signing identity where symbolic links are supported', async () => {
+    const db = database()
+    await provisionPreflightPacket(db)
+    const path = signingIdentityPath(db)
+    const target = `${path}.target`
+    renameSync(path, target)
+    try {
+      symlinkSync(target, path)
+    } catch (error: unknown) {
+      // Some Windows environments prohibit symlink creation without a privilege.
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        renameSync(target, path)
+        db.close()
+        return
+      }
+      throw error
+    }
+
+    expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/symbolic link/)
+    db.close()
+  })
+
+  it('reuses the same worker-pinned signing identity after a database restart', async () => {
+    const db = database()
+    const databasePath = String(db.name)
+    const firstPacket = await provisionPreflightPacket(db)
+    db.close()
+
+    const restarted = openDatabase(databasePath)
+    migrate(restarted)
+    const restartedPacket = actionPacket(restarted, 'owner-a', 'action:preflight:attempt-1:1')
+    expect(restartedPacket.controllerKeyId).toBe(firstPacket.controllerKeyId)
+    expect(restartedPacket.controllerPublicKey).toBe(firstPacket.controllerPublicKey)
+    expect(verifyControllerActionPacket(restartedPacket)).toBe(true)
+    restarted.close()
+  })
+
+  it('fails closed rather than generating a replacement for a missing worker-pinned key', async () => {
+    const db = database()
+    await provisionPreflightPacket(db)
+    unlinkSync(signingIdentityPath(db))
+
+    expect(() => actionPacket(db, 'owner-a', 'action:preflight:attempt-1:1')).toThrow(/missing after worker pinning/)
+    expect(readdirSync(dirname(String(db.name))).filter(file => file.startsWith('controller-action-signing-v1-'))).toEqual([])
     db.close()
   })
 
@@ -242,7 +333,11 @@ describe('quiet evidence lanes', () => {
       { kind: 'preflight_attempt', state: 'satisfied', target_topic_id: 'grp_101' }
     ])
     const executeEffect = JSON.parse(String((db.prepare("SELECT payload_json FROM outbox WHERE action_id='action:execute:attempt-1:1'").get() as { payload_json: string }).payload_json))
-    expect(JSON.parse(executeEffect.renderedContent)).toMatchObject({ kind: 'execute_attempt', ownerUid: 'owner-a' })
+    const executePacket = JSON.parse(executeEffect.renderedContent)
+    expect(executePacket).toMatchObject({ kind: 'execute_attempt', catscoProjectId: '41', ownerUid: 'owner-a' })
+    expect(verifyControllerActionPacket(executePacket)).toBe(true)
+    const { packetDigest: executePacketDigest, controllerSignature: _executeSignature, ...executePacketContent } = executePacket
+    expect(executePacketDigest).toBe(digestJson(executePacketContent))
     db.close()
   })
 

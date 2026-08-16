@@ -156,7 +156,7 @@ it('loads only package-relative migrations from an unrelated working directory',
     migrate(db)
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='work_items'").get()).toBeTruthy()
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='malicious'").get()).toBeUndefined()
-    expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }])
+    expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }])
   } finally {
     db?.close()
     globalThis.process.chdir(originalCwd)
